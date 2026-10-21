@@ -1,0 +1,14 @@
+# dados: ficam so na maquina (repositorio publico; as imagens passam de 2 GB)
+bombpot.db
+bombpot.db-journal
+entrada/
+processadas/
+recusadas/
+hh/
+dados_wpt/
+*.log
+
+# gerados
+__pycache__/
+.pytest_cache/
+.playwright-mcp/

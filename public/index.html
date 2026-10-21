@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BombPot Tracker</title>
+<link rel="icon" href="data:,">
+<style>
+/* Tokens do DESIGN.md do MetaLens: a cara do H2N */
+:root {
+  --bg: #1e1e1e; --panel: #2b2b2b; --panel-head: #333; --border: #5a5a5a; --title: #d8d8d8;
+  --label: #e8e8e8; --muted: #8a8a8a; --dim: #5f5f5f; --accent: #e8a33d; --hero: #3aa0f0;
+  --bar: #4a4a4a; --on: #5cc25c;
+}
+* { box-sizing: border-box; }
+html { scrollbar-color: #4a4a4a var(--panel); }
+body { margin: 0; background: var(--bg); color: var(--label); font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+::selection { background: var(--accent); color: #111; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button, input, select { font: inherit; color: inherit; }
+
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 16px;
+  background: var(--panel-head); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 15px; letter-spacing: .5px; margin: 0; color: var(--title); }
+header .info { color: var(--muted); }
+header .acoes { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+select, .btn { background: var(--panel); border: 1px solid var(--border); padding: 6px 10px; min-height: 32px; }
+.btn { cursor: pointer; } .btn:hover { border-color: var(--accent); }
+
+main { display: grid; grid-template-columns: 340px 1fr; min-height: calc(100vh - 53px); }
+#filtros { border-right: 1px solid var(--border); background: var(--panel); overflow-y: auto; max-height: calc(100vh - 53px);
+  position: sticky; top: 0; }
+details { border-bottom: 1px solid var(--border); }
+summary { padding: 9px 12px; cursor: pointer; color: var(--title); font-weight: 600; letter-spacing: .3px;
+  background: var(--panel-head); list-style: none; display: flex; justify-content: space-between; }
+summary::-webkit-details-marker { display: none; }
+summary .n { color: var(--accent); font-weight: 400; }
+.filtro { padding: 8px 12px 4px; }
+.filtro > label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; cursor: pointer; min-height: 28px;
+  font-variant-numeric: tabular-nums; }
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: #3a2f1e; }
+.faixa { display: flex; gap: 6px; align-items: center; }
+.faixa input { width: 80px; background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; }
+
+#resultado { padding: 14px 16px 40px; overflow-x: hidden; }
+.ativos { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; min-height: 24px; }
+.ativos span { border: 1px solid var(--accent); color: var(--accent); padding: 2px 8px; font-size: 12px; }
+.ativos .vazio { border: 0; color: var(--muted); padding: 2px 0; }
+.resumo { color: var(--muted); margin-bottom: 12px; font-variant-numeric: tabular-nums; }
+.resumo b { color: var(--label); }
+.caixas { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.caixa { background: var(--panel); border: 1px solid var(--border); min-width: 300px; flex: 1 1 340px; }
+.caixa h2 { margin: 0; padding: 7px 10px; font-size: 15px; letter-spacing: .5px; color: var(--title);
+  background: var(--panel-head); border-bottom: 1px solid var(--border); font-weight: 600; }
+.caixa h2 small { color: var(--muted); font-weight: 400; font-size: 12px; letter-spacing: 0; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 5px 8px; border-bottom: 1px solid #3a3a3a; text-align: right; white-space: nowrap; }
+thead th { color: var(--muted); font-weight: 400; font-size: 12px; }
+tbody th { text-align: left; font-weight: 400; color: var(--label); }
+td .v { font-size: 15px; font-weight: 700; }
+td .s { color: var(--muted); font-size: 11px; margin-left: 4px; }
+td.barra { width: 40%; padding-left: 0; }
+.barra div { height: 10px; background: var(--bar); }
+.barra .hero { background: var(--hero); height: 4px; margin-top: 2px; }
+tr.max th, tr.max .v { color: var(--accent); }
+tr.max th::after { content: " ◀ mais usada"; font-size: 11px; }
+.fraca .v { color: var(--dim); }
+.weak { padding: 8px 10px 0; }
+.topo-res { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.caixa p.sub { margin: 0; padding: 8px 10px 2px; color: var(--title); font-weight: 600; }
+.ev-pos .v { color: var(--on); } .ev-neg .v { color: #e05555; }
+.rolar { overflow-x: auto; }
+.linha-mao { white-space: normal; text-align: left; font-size: 12px; color: var(--muted); }
+.linha-mao .rua { margin-right: 10px; display: inline-block; }
+.linha-mao .eu { color: var(--accent); font-weight: 700; }
+.cartas span { margin-right: 3px; font-weight: 700; }
+.naipe-s { color: #c8c8c8; } .naipe-h { color: #e05555; } .naipe-d { color: #3aa0f0; } .naipe-c { color: #5cc25c; }
+th.sub-th { color: var(--title); font-weight: 600; padding-top: 10px; }
+.caixa { overflow-x: auto; }
+.caixa.painel { flex-basis: 440px; }
+tr.clicavel { cursor: pointer; } tr.clicavel:hover { background: #333; }
+.barra-weak { height: 8px; background: #8a3a3a; }
+.barra-weak div { height: 100%; background: var(--on); }
+.weak .nota { padding: 4px 0 0; }
+body.carregando #caixas { opacity: .55; transition: opacity .15s; }
+.col-hero .v { color: var(--hero); }
+.nota { color: var(--muted); font-size: 12px; padding: 6px 10px; }
+.maos { max-height: 420px; overflow-y: auto; }
+.maos tbody tr { cursor: pointer; } .maos tbody tr:hover { background: #333; }
+.maos td, .maos th { text-align: left; }
+
+dialog { background: var(--panel); color: var(--label); border: 1px solid var(--border); padding: 0;
+  max-width: min(96vw, 720px); max-height: 94vh; }
+dialog::backdrop { background: rgba(0, 0, 0, .7); }
+dialog header { position: sticky; top: 0; }
+dialog img { display: block; width: 100%; height: auto; }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  #filtros { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--border); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>BOMBPOT TRACKER</h1>
+  <span class="info" id="info">carregando…</span>
+  <div class="acoes">
+    <button class="btn" id="vista">Painel de tendências</button>
+    <select id="presets" aria-label="Filtros prontos"><option value="">Filtros prontos…</option></select>
+    <select id="salvos" aria-label="Meus filtros"><option value="">Meus filtros…</option></select>
+    <button class="btn" id="salvar">Salvar filtro</button>
+    <button class="btn" id="fixarA" title="Guarda o filtro atual como A e compara com o que vier depois">Fixar como A</button>
+    <button class="btn" id="exportar" title="As mãos do filtro, em .txt para importar no H2N">Exportar .txt</button>
+    <button class="btn" id="limpar">Limpar</button>
+  </div>
+</header>
+<main>
+  <aside id="filtros" aria-label="Filtros"></aside>
+  <section id="resultado" aria-live="polite">
+    <div class="topo-res"><div class="ativos" id="ativos"></div>
+      <select id="agrupar" aria-label="Agrupar por"></select></div>
+    <div class="resumo" id="resumo"></div>
+    <div class="caixas" id="caixas"></div>
+  </section>
+</main>
+<dialog id="print">
+  <header><h1 id="print-titulo"></h1><div class="acoes"><button class="btn" id="fechar">Fechar</button></div></header>
+  <img id="print-img" alt="Print da mão">
+</dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>
