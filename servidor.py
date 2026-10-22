@@ -1,8 +1,10 @@
-"""O site do tracker: filtros livres sobre a tabela `decisoes`, estilo H2N.
+"""O site do tracker: filtros livres sobre a tabela `decisoes`, no formato de relatorio do SnapMDA.
 
     python servidor.py [porta]     reconstroi `decisoes`, sobe em 127.0.0.1 e abre o navegador
 
 So escuta em 127.0.0.1: o banco e os prints nao saem da maquina.
+Hero e populacao entram juntos em tudo (pedido do usuario em 2026-10-21); o filtro `hero` continua
+existindo para quando a separacao voltar.
 """
 
 from __future__ import annotations
@@ -22,25 +24,29 @@ import tracker
 RAIZ = Path(__file__).resolve().parent
 PUBLIC = RAIZ / "public"
 
-# As faixas de tamanho, em fracao do pote. Cada uma inclui o limite de cima (1,00 cai em 0,86-1,00).
-FAIXAS = [(0.15, "0,01–0,15"), (0.33, "0,16–0,33"), (0.45, "0,34–0,45"), (0.66, "0,46–0,66"),
-          (0.85, "0,67–0,85"), (1.00, "0,86–1,00"), (1.20, "1,01–1,20"), (1.50, "1,21–1,50"),
-          (2.00, "1,51–2,00"), (None, "2,00+")]
-CASE_FAIXA = "CASE " + " ".join(f"WHEN {{col}} <= {teto} THEN '{nome}'" for teto, nome in FAIXAS if teto) \
+# As faixas de tamanho, em fracao do pote, com o nome curto (B50 = "bet de meio pote", como o usuario fala).
+# Cada uma inclui o limite de cima (1,00 cai em 0,86-1,00). O valor do filtro e o rotulo longo.
+FAIXAS = [(0.05, "0,01–0,05", "B5"), (0.15, "0,06–0,15", "B10"), (0.33, "0,16–0,33", "B25"), (0.45, "0,34–0,45", "B40"),
+          (0.66, "0,46–0,66", "B50"), (0.85, "0,67–0,85", "B75"), (1.00, "0,86–1,00", "B100"),
+          (1.20, "1,01–1,20", "B110"), (1.50, "1,21–1,50", "B135"), (2.00, "1,51–2,00", "B175"),
+          (None, "2,00+", "B200+")]
+# Tamanho vazio (nao apostou / nao pagou) fica sem faixa: sem o primeiro WHEN ele caia no ELSE e virava "2,00+".
+CASE_FAIXA = "CASE WHEN {col} IS NULL THEN NULL " + " ".join(f"WHEN {{col}} <= {teto} THEN '{nome}'" for teto, nome, _ in FAIXAS if teto) \
     + f" ELSE '{FAIXAS[-1][1]}' END"
+EV_BLEFE = "CASE WHEN resposta = 'todos foldam' THEN 1.0 ELSE -tamanho END"
 
-# coluna -> tipo do filtro. 'lista' = IN (...), 'faixa' = min/max, 'faixas' = faixas de tamanho acima,
-# 'tags' = contem qualquer uma das tags (texturas nao exclusivas), 'datas' = periodo YYYY-MM-DD.
+# coluna -> tipo do filtro. 'lista' = IN (...), 'faixa' = min/max (ou lista de valores), 'faixas' = faixas
+# de tamanho acima, 'tags' = contem qualquer uma das tags (texturas nao exclusivas), 'datas' = periodo.
 FILTROS = {
     "hero": "lista", "pos": "lista", "pos_rel": "lista", "ip": "lista", "rua": "lista",
     "situacao": "lista", "decisao_n": "lista", "checou_antes": "lista", "agressor_anterior": "lista",
     "rua_anterior_checada": "lista", "acao_anterior": "lista", "acao": "lista", "allin": "lista",
-    "forca": "lista", "draw": "lista", "weak": "lista", "naipes_flop": "lista", "flop_pareado": "lista", "flop_conectado": "lista",
-    "flop_alta": "lista", "board_pareado": "lista", "board_flush": "lista", "marcada": "lista",
-    "n_jogadores": "faixa", "n_vivos": "faixa", "pote": "faixa", "spr": "faixa",
+    "forca": "lista", "draw": "lista", "weak": "lista", "naipes_flop": "lista", "flop_pareado": "lista",
+    "flop_conectado": "lista", "flop_alta": "lista", "board_pareado": "lista", "board_flush": "lista",
+    "marcada": "lista", "n_jogadores": "faixa", "n_vivos": "faixa", "pote": "faixa", "spr": "faixa",
     "tamanho": "faixas", "tamanho_enfrentado": "faixas",
     "resposta": "lista", "linha_flop": "lista", "linha_turn": "lista", "sd": "lista", "ganhou": "lista",
-    "texturas": "tags", "data": "datas",
+    "texturas": "tags", "data": "datas", "tam_flop": "faixas", "tam_turn": "faixas", "enf_flop": "faixas", "enf_turn": "faixas",
 }
 DATA_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -52,6 +58,8 @@ def expressao(col: str) -> str | None:
         return col
     if tipo == "faixas":
         return CASE_FAIXA.format(col=col)
+    if tipo == "faixa" and col == "n_jogadores":
+        return col
     return None
 
 
@@ -63,7 +71,10 @@ def where(filtros: dict) -> tuple[str, list]:
         if tipo == "lista" and isinstance(valor, list) and valor:
             partes.append(f"{col} IN ({','.join('?' * len(valor))})")
             params += valor
-        elif tipo == "faixa" and isinstance(valor, dict):
+        elif tipo == "faixa" and isinstance(valor, list) and valor:  # valores soltos: mesas com 8, 7, 6 e 5
+            partes.append(f"{col} IN ({','.join('?' * len(valor))})")
+            params += [float(v) for v in valor]
+        elif tipo in ("faixa", "faixas") and isinstance(valor, dict):  # faixas: a faixa livre da barrinha
             if valor.get("min") not in (None, ""):
                 partes.append(f"{col} >= ?")
                 params.append(float(valor["min"]))
@@ -84,26 +95,109 @@ def where(filtros: dict) -> tuple[str, list]:
     return (" WHERE " + " AND ".join(partes)) if partes else "", params
 
 
-def contagem(con, sql_where: str, params: list, expr: str, extra: str = "") -> dict:
-    """{'pop': {valor: n}, 'hero': {valor: n}} agrupando pela expressao."""
-    sql = f"SELECT hero, {expr}, count(*) FROM decisoes{sql_where}{extra} GROUP BY 1, 2"
-    saida: dict = {"pop": {}, "hero": {}}
-    for hero, chave, n in con.execute(sql, params):
+def _e(w: str) -> str:
+    return " AND " if w else " WHERE "
+
+
+def contagem(con, w: str, p: list, expr: str, extra: str = "") -> dict:
+    """{valor: n} agrupando pela expressao."""
+    return {chave: n for chave, n in con.execute(
+        f"SELECT {expr}, count(*) FROM decisoes{w}{extra} GROUP BY 1", p) if chave is not None}
+
+
+def metricas(con, w: str, p: list, expr: str) -> dict[str, dict]:
+    """As colunas do relatorio para cada valor de `expr` (uma linha da grade por valor).
+
+    n/maos: amostra · acoes: frequencia de cada acao · bets: quantas bets em cada faixa de tamanho ·
+    weak: [fracas, com cartas conhecidas] · resposta: o que a mesa fez depois das bets (e o EV do blefe) ·
+    wsd: [ganhou no showdown, foi ao showdown] (sem as maos marcadas)."""
+    linhas: dict[str, dict] = {}
+
+    def linha(chave) -> dict:
+        return linhas.setdefault(str(chave), {"chave": str(chave), "n": 0, "maos": 0, "acoes": {}, "bets": {},
+                                              "weak": [0, 0], "wsd": [0, 0], "defesa": [0, 0, 0.0],
+                                              "resposta": {"todos foldam": 0, "pago": 0, "aumentado": 0,
+                                                           "ev": 0.0, "tam": 0.0}})
+
+    for chave, n, maos in con.execute(f"SELECT {expr}, count(*), count(DISTINCT hand_id) FROM decisoes{w} GROUP BY 1", p):
         if chave is not None:
-            saida["hero" if hero else "pop"][chave] = n
+            linha(chave).update(n=n, maos=maos)
+    for chave, acao, n in con.execute(f"SELECT {expr}, acao, count(*) FROM decisoes{w} GROUP BY 1, 2", p):
+        if chave is not None:
+            linha(chave)["acoes"][acao] = n
+    for chave, faixa, n in con.execute(
+            f"SELECT {expr}, {CASE_FAIXA.format(col='tamanho')}, count(*) FROM decisoes{w}{_e(w)}acao = 'Bet' "
+            "AND tamanho IS NOT NULL GROUP BY 1, 2", p):
+        if chave is not None:
+            linha(chave)["bets"][faixa] = n
+    for chave, fracas, conhecidas in con.execute(f"SELECT {expr}, sum(weak), count(weak) FROM decisoes{w} GROUP BY 1", p):
+        if chave is not None:
+            linha(chave)["weak"] = [fracas or 0, conhecidas]
+    for chave, resp, n, ev, tam in con.execute(
+            f"SELECT {expr}, resposta, count(*), sum({EV_BLEFE}), sum(tamanho) FROM decisoes{w}{_e(w)}acao = 'Bet' "
+            "AND resposta IS NOT NULL AND tamanho IS NOT NULL GROUP BY 1, 2", p):
+        if chave is not None:
+            r = linha(chave)["resposta"]
+            r[resp] = n
+            r["ev"] += ev
+            r["tam"] += tam
+    # Lado de quem enfrenta bet/raise: quantas vezes foldou e quanto "precisava" foldar (soma de t/(1+t) de cada
+    # decisao, t = tamanho enfrentado). Fold acima do precisa = overfold: um blefe contra ele da lucro.
+    for chave, n, folds, precisa in con.execute(
+            f"SELECT {expr}, count(*), sum(CASE WHEN acao = 'Fold' THEN 1 ELSE 0 END), "
+            f"sum(tamanho_enfrentado / (1 + tamanho_enfrentado)) FROM decisoes{w}{_e(w)}situacao != 'livre' "
+            "AND tamanho_enfrentado IS NOT NULL GROUP BY 1", p):
+        if chave is not None:
+            linha(chave)["defesa"] = [n, folds, precisa]
+    for chave, ganhou, foi in con.execute(
+            f"SELECT {expr}, sum(CASE WHEN ganhou = 1 THEN 1 ELSE 0 END), count(*) FROM decisoes{w}{_e(w)}"
+            "sd = 1 AND marcada = 0 GROUP BY 1", p):
+        if chave is not None:
+            linha(chave)["wsd"] = [ganhou, foi]
+    return linhas
+
+
+def grafico(con, w: str, p: list) -> dict[str, dict]:
+    """Por faixa de tamanho da bet: quantas vezes foi usada e como a mesa respondeu (o grafico tamanho x fold)."""
+    saida: dict[str, dict] = {}
+    for faixa, resp, n, ev, tam in con.execute(
+            f"SELECT {CASE_FAIXA.format(col='tamanho')}, resposta, count(*), sum({EV_BLEFE}), sum(tamanho) "
+            f"FROM decisoes{w}{_e(w)}acao = 'Bet' AND tamanho IS NOT NULL GROUP BY 1, 2", p):
+        f = saida.setdefault(faixa, {"usos": 0, "todos foldam": 0, "pago": 0, "aumentado": 0, "ev": 0.0, "tam": 0.0})
+        f["usos"] += n
+        if resp:
+            f[resp] = n
+            f["ev"] += ev
+            f["tam"] += tam
+    return saida
+
+
+def defesa(con, w: str, p: list) -> dict[str, dict]:
+    """Lado de quem ENFRENTA bet/raise, por faixa do tamanho enfrentado: fold/call/raise e quanto precisaria foldar
+    (soma de t/(1+t)). E o espelho do grafico(): la a resposta da mesa a quem aposta, aqui a decisao de quem defende."""
+    saida: dict[str, dict] = {}
+    for faixa, acao, n, precisa in con.execute(
+            f"SELECT {CASE_FAIXA.format(col='tamanho_enfrentado')}, acao, count(*), "
+            f"sum(tamanho_enfrentado / (1 + tamanho_enfrentado)) FROM decisoes{w}{_e(w)}situacao != 'livre' "
+            "AND tamanho_enfrentado IS NOT NULL GROUP BY 1, 2", p):
+        f = saida.setdefault(faixa, {"n": 0, "Fold": 0, "Call": 0, "Raise": 0, "precisa": 0.0})
+        f["n"] += n
+        f["precisa"] += precisa
+        if acao in f:
+            f[acao] += n
     return saida
 
 
 def consultar(con: sqlite3.Connection, filtros: dict) -> dict:
     w, p = where(filtros)
-    e = " AND " if w else " WHERE "
-    total = {("hero" if h else "pop"): (n, m) for h, n, m in con.execute(
-        f"SELECT hero, count(*), count(DISTINCT hand_id) FROM decisoes{w} GROUP BY hero", p)}
-    maos = [dict(zip(("hand_id", "png", "rua", "pos", "hero", "situacao", "acao", "tamanho", "allin", "forca",
-                      "cartas", "data"), r))
+    geral = metricas(con, w, p, "'Geral'").get("Geral")
+    expr = expressao(filtros["_agrupar"]) if isinstance(filtros.get("_agrupar"), str) else None
+    grupos = list(metricas(con, w, p, expr).values()) if expr else []
+    maos: list[dict] = [dict(zip(("hand_id", "png", "rua", "pos", "hero", "situacao", "acao", "tamanho", "allin", "forca",
+                      "cartas", "data", "faixa"), r))
             for r in con.execute(
                 "SELECT d.hand_id, h.png, d.rua, d.pos, d.hero, d.situacao, d.acao, d.tamanho, d.allin, d.forca, "
-                "j.cartas, d.data "
+                f"j.cartas, d.data, CASE WHEN d.tamanho IS NULL THEN NULL ELSE {CASE_FAIXA.format(col='d.tamanho')} END "
                 f"FROM (SELECT * FROM decisoes{w}) d JOIN hands h ON h.id = d.hand_id "
                 "JOIN jogadores j ON j.hand_id = d.hand_id AND j.pos = d.pos "
                 "ORDER BY d.hand_id DESC, d.ordem LIMIT 300", p)]
@@ -111,17 +205,14 @@ def consultar(con: sqlite3.Connection, filtros: dict) -> dict:
     for m in maos:
         m["linha"] = linhas.get(m["hand_id"], [])
     return {
-        "total": {k: {"decisoes": v[0], "maos": v[1]} for k, v in total.items()},
-        "acoes": contagem(con, w, p, "acao"),
-        "bet": contagem(con, w, p, CASE_FAIXA.format(col="tamanho"), f"{e}acao = 'Bet'"),
-        "raise": contagem(con, w, p, CASE_FAIXA.format(col="tamanho"), f"{e}acao = 'Raise'"),
-        "allin": contagem(con, w, p, "acao", f"{e}allin = 1"),
+        "geral": geral,
+        "agrupar": filtros.get("_agrupar") if expr else None,
+        "grupos": grupos,
+        "grafico": grafico(con, w, p),
+        "defesa": defesa(con, w, p),
         "forca": contagem(con, w, p, "forca"),
         "draw": contagem(con, w, p, "draw"),
-        "weak": contagem(con, w, p, "weak"),
-        "resposta": resposta(con, w, p, e),
-        "resultado": resultado(con, w, p),
-        "agrupado": agrupar(con, w, p, filtros.get("_agrupar")),
+        "mesa": mesa(con, filtros),
         "maos": maos,
     }
 
@@ -139,7 +230,7 @@ def linhas_de_mao(con, ids: set[str]) -> dict[str, list]:
     boards = dict(con.execute(f"SELECT id, board FROM hands WHERE id IN ({marcas})", list(ids)))
     saida: dict[str, list] = {}
     corte = {"flop": slice(0, 3), "turn": slice(3, 4), "river": slice(4, 5)}
-    apostou = False
+    apostou, maior = False, 0.0
     for hid, rua, pos, verbo, valor, allin, pote in con.execute(
             f"SELECT hand_id, rua, pos, verbo, valor, allin, pote_antes FROM acoes "
             f"WHERE hand_id IN ({marcas}) ORDER BY hand_id, ordem", list(ids)):
@@ -148,55 +239,33 @@ def linhas_de_mao(con, ids: set[str]) -> dict[str, list]:
         ruas = saida.setdefault(hid, [])
         if not ruas or ruas[-1][0] != rua:
             ruas.append((rua, " ".join((boards.get(hid) or "").split()[corte[rua]]), pote, []))
-            apostou = False
+            apostou, maior = False, 0.0
         if verbo == "Raise" and not apostou:  # o WPT escreve a aposta all-in como "Raise"
             verbo = "Bet"
+        elif verbo == "Raise" and (valor or 0) <= maior:  # all-in menor que a bet: e um call
+            verbo = "Call"
         apostou = apostou or verbo in ("Bet", "Raise")
+        if verbo in ("Bet", "Raise"):
+            maior = valor or 0
         quanto = "" if valor is None else f"{valor:g}"
         ruas[-1][3].append((pos, f"{LETRA[verbo]}{quanto}{chr(39) if allin else ''}"))
     return saida
 
 
-def resposta(con, w: str, p: list, e: str) -> dict:
-    """Bet/Raise por faixa: como a mesa respondeu e o EV do blefe puro (% do pote).
+def mesa(con, filtros: dict) -> dict:
+    """O que a mesa desenha: maos por numero de jogadores e acoes por posicao.
 
-    EV de um blefe que nunca ganha quando pago: +1 pote se todos foldam, -tamanho se nao (H2N: F*100-(1-F)*size)."""
-    saida: dict = {}
-    sql = (f"SELECT acao, hero, {CASE_FAIXA.format(col='tamanho')}, resposta, count(*), "
-           "sum(CASE WHEN resposta = 'todos foldam' THEN 1.0 ELSE -tamanho END) "
-           f"FROM decisoes{w}{e}acao IN ('Bet', 'Raise') AND resposta IS NOT NULL AND tamanho IS NOT NULL "
-           "GROUP BY 1, 2, 3, 4")
-    for acao, hero, faixa, resp, n, ev in con.execute(sql, p):
-        celula = saida.setdefault(acao, {}).setdefault("hero" if hero else "pop", {}).setdefault(faixa, {"ev": 0.0})
-        celula[resp] = n
-        celula["ev"] += ev
-    return saida
-
-
-def resultado(con, w: str, p: list) -> dict:
-    """Lucro medio (BB) a partir da decisao, WTSD e W$SD, por quem."""
-    sql = ("SELECT hero, count(lucro), avg(lucro), count(*), sum(sd), "
-           "sum(CASE WHEN sd = 1 AND marcada = 0 THEN 1 ELSE 0 END), "
-           f"sum(CASE WHEN sd = 1 AND marcada = 0 AND ganhou = 1 THEN 1 ELSE 0 END) FROM decisoes{w} GROUP BY hero")
-    return {("hero" if h else "pop"): {"n_lucro": nl, "lucro": lucro, "n": n, "sd": sd, "n_wsd": nw, "wsd": ws}
-            for h, nl, lucro, n, sd, nw, ws in con.execute(sql, p)}
-
-
-def agrupar(con, w: str, p: list, col) -> dict | None:
-    """'Agrupar por' (as abas de relatorio do H2N/HM3): valor -> acoes e weak, por quem."""
-    expr = expressao(col) if isinstance(col, str) else None
-    if not expr:
-        return None
-    saida: dict = {"coluna": col, "pop": {}, "hero": {}}
-    for hero, chave, acao, n in con.execute(
-            f"SELECT hero, {expr}, acao, count(*) FROM decisoes{w} GROUP BY 1, 2, 3", p):
-        if chave is not None:
-            saida["hero" if hero else "pop"].setdefault(str(chave), {})[acao] = n
-    for hero, chave, fracas, conhecidas in con.execute(
-            f"SELECT hero, {expr}, sum(weak), count(weak) FROM decisoes{w} GROUP BY 1, 2", p):
-        if chave is not None and conhecidas:
-            saida["hero" if hero else "pop"].setdefault(str(chave), {})["_weak"] = [fracas, conhecidas]
-    return saida
+    Cada parte ignora o proprio filtro (a contagem por jogadores ignora n_jogadores; os assentos
+    ignoram pos), senao escolher 8 jogadores apagaria os outros botoes e escolher o BTN apagaria
+    os outros assentos."""
+    w, p = where({k: v for k, v in filtros.items() if k != "n_jogadores"})
+    por_n = {str(n): m for n, m in con.execute(
+        f"SELECT n_jogadores, count(DISTINCT hand_id) FROM decisoes{w} GROUP BY 1", p)}
+    w, p = where({k: v for k, v in filtros.items() if k != "pos"})
+    por_pos: dict = {}
+    for pos, acao, n in con.execute(f"SELECT pos, acao, count(*) FROM decisoes{w} GROUP BY 1, 2", p):
+        por_pos.setdefault(pos, {})[acao] = n
+    return {"por_n": por_n, "por_pos": por_pos}
 
 
 GRANDE = ["0,67–0,85", "0,86–1,00", "1,01–1,20", "1,21–1,50", "1,51–2,00", "2,00+"]
@@ -220,7 +289,7 @@ PAINEL = [
     ("River", "Bet-bet-bet (B, B, bet)", {"rua": ["river"], "situacao": ["livre"], "linha_flop": ["B"], "linha_turn": ["B"]}, {"acao": ["Bet"]}),
     ("River", "Bet-check-bet (B, X, bet)", {"rua": ["river"], "situacao": ["livre"], "linha_flop": ["B"], "linha_turn": ["X"]}, {"acao": ["Bet"]}),
     ("River", "Fold contra aposta", {"rua": ["river"], "situacao": ["enfrenta aposta"]}, {"acao": ["Fold"]}),
-    ("River", "Fold contra aposta grande (≥ 0,67)", {"rua": ["river"], "situacao": ["enfrenta aposta"], "tamanho_enfrentado": GRANDE}, {"acao": ["Fold"]}),
+    ("River", "Fold contra aposta grande (≥ B75)", {"rua": ["river"], "situacao": ["enfrenta aposta"], "tamanho_enfrentado": GRANDE}, {"acao": ["Fold"]}),
     ("River", "Raise contra aposta", {"rua": ["river"], "situacao": ["enfrenta aposta"]}, {"acao": ["Raise"]}),
     ("River", "Weak% das apostas (blefe no showdown)", {"rua": ["river"], "acao": ["Bet"], "weak": [0, 1]}, {"weak": [1]}),
     ("Showdown", "Foi ao showdown (WTSD)", {"rua": ["flop"], "decisao_n": [1]}, {"sd": [1]}),
@@ -234,12 +303,10 @@ def painel(con: sqlite3.Connection, filtros: dict) -> list[dict]:
     for secao, nome, base, num in PAINEL:
         w, p = where({**filtros, **base})
         cond, pc = where(num)
-        cel = {"secao": secao, "nome": nome, "base": base, "num": num}
-        for hero, n, feitos in con.execute(
-                f"SELECT hero, count(*), sum(CASE WHEN {cond[len(' WHERE '):]} THEN 1 ELSE 0 END) "
-                f"FROM decisoes{w} GROUP BY hero", pc + p):
-            cel["hero" if hero else "pop"] = [feitos or 0, n]
-        saida.append(cel)
+        feitos, n = con.execute(
+            f"SELECT sum(CASE WHEN {cond[len(' WHERE '):]} THEN 1 ELSE 0 END), count(*) FROM decisoes{w}",
+            pc + p).fetchone()
+        saida.append({"secao": secao, "nome": nome, "base": base, "num": num, "v": [feitos or 0, n]})
     return saida
 
 
@@ -261,7 +328,8 @@ def opcoes(con: sqlite3.Connection) -> dict:
     tags = sorted({tag for (txt,) in con.execute("SELECT DISTINCT texturas FROM decisoes WHERE texturas IS NOT NULL")
                    for tag in txt.strip("|").split("|") if tag})
     datas = con.execute("SELECT min(data), max(data) FROM decisoes").fetchone()
-    return {"lista": lista, "faixa": faixa, "faixas": [nome for _, nome in FAIXAS], "tags": tags, "datas": datas,
+    return {"lista": lista, "faixa": faixa, "faixas": [nome for _, nome, _ in FAIXAS],
+            "codigos": {nome: cod for _, nome, cod in FAIXAS}, "tags": tags, "datas": datas,
             "forcas": decisoes.FORCAS, "draws": decisoes.DRAWS, "maos": n_maos}
 
 

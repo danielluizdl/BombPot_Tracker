@@ -63,6 +63,10 @@ CREATE TABLE decisoes (
   lucro REAL,                   -- BB ganhos a partir desta decisao (net + ja investido); NULL em mao marcada
   sd INTEGER NOT NULL,          -- chegou ao showdown
   ganhou INTEGER,               -- terminou a mao com net > 0
+  tam_flop REAL,                -- tamanho da ultima aposta/raise DELE no flop (fracao do pote), em decisoes do turn/river
+  tam_turn REAL,                -- idem no turn, em decisoes do river
+  enf_flop REAL,                -- tamanho da bet/raise que ELE PAGOU no flop (a ultima que pagou), em decisoes do turn/river
+  enf_turn REAL,                -- idem no turn, em decisoes do river
   PRIMARY KEY (hand_id, ordem)
 );
 CREATE INDEX decisoes_rua_sit ON decisoes (rua, situacao);
@@ -164,6 +168,9 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
     gasto_antes: list[float] = []  # por linha: o que o jogador ja tinha posto antes da decisao
     data = data_do_id(hid)
     letras: dict[str, dict[str, str]] = {r: defaultdict(str) for r in RUAS}
+    tamanhos: dict[str, dict[str, float]] = {r: {} for r in RUAS}  # rua -> jogador -> tamanho da agressao dele
+    pagou: dict[str, dict[str, float]] = {r: {} for r in RUAS}  # rua -> jogador -> tamanho da bet que ele pagou
+    tam_antes: list[tuple] = []  # por linha: (tam_flop, tam_turn, enf_flop, enf_turn) do jogador ate a rua da decisao
     tags = ["|".join(tags_rua(todas, 1)), "|".join(tags_rua(todas, 1) + tags_rua(todas, 2))]
     agressor_anterior = None
     rua_anterior_checada = None
@@ -191,6 +198,9 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
                 continue
             if verbo == "Raise" and maior == 0:  # o WPT escreve a aposta all-in como "Raise"
                 verbo = "Bet"
+            por_menos = verbo == "Raise" and (valor or 0) <= maior  # all-in menor que a bet: e call, mas vem "Raise"
+            if por_menos:
+                verbo = "Call"
             vezes[p] += 1
             situacao = "livre" if maior == 0 else "enfrenta aposta" if raises == 0 else "enfrenta raise"
             spr = None
@@ -224,6 +234,14 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
                 f"|{tags[i_rua - 1]}|" if i_rua else None,
             ])
             letras[rua][p] += LETRA[verbo]
+            tam_antes.append((tamanhos["flop"].get(p) if i_rua >= 1 else None,
+                              tamanhos["turn"].get(p) if i_rua >= 2 else None,
+                              pagou["flop"].get(p) if i_rua >= 1 else None,
+                              pagou["turn"].get(p) if i_rua >= 2 else None))
+            if verbo in ("Bet", "Raise") and tamanho is not None:
+                tamanhos[rua][p] = tamanho
+            if verbo == "Call" and ultima_agressao is not None:
+                pagou[rua][p] = ultima_agressao
             # estado depois da acao
             if verbo == "Bet":
                 investido[p] = valor or 0
@@ -233,7 +251,8 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
                 maior, ultima_agressao, agressor = investido[p], tamanho, p
                 raises += 1
             elif verbo == "Call":
-                investido[p] += valor or 0
+                # no call normal o valor e o complemento; no all-in por menos ("Raise" do WPT) e o total na rua
+                investido[p] = max(investido[p], valor or 0) if por_menos else investido[p] + (valor or 0)
             elif verbo == "Check":
                 checou.add(p)
             elif verbo == "Fold":
@@ -251,11 +270,12 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
         agressor_anterior = agressor if agressor in vivos else None
         rua_anterior_checada = int(maior == 0)
     showdown = len(vivos) >= 2
-    for linha, gasto in zip(saida, gasto_antes):
+    for linha, gasto, antes in zip(saida, gasto_antes, tam_antes):
         net = jog[linha[3]].get("net")
         linha.append(None if marcada or net is None else round(net + gasto, 2))
         linha.append(int(showdown and linha[3] in vivos))
         linha.append(None if net is None else int(net > 0))
+        linha.extend(antes)
     return [tuple(linha) for linha in saida]
 
 

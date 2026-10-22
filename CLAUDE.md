@@ -14,6 +14,7 @@ forca.py       categorias de forca do H2N + draws + weak (puro, test_forca.py)
 servidor.py    site local (127.0.0.1:8770): filtros -> WHERE em `decisoes`; painel, agrupar, exportar
 public/        a tela (HTML/JS puro, tema do DESIGN.md do MetaLens)
 PLANO_H2N.md   pesquisa H2N/HM3, debate e prioridades (todas as 7 fatias feitas)
+test_banco_real.py  refaz as contas do site direto da tabela acoes (independente) no banco real; pulado sem bombpot.db
 ```
 
 Quirks do WPT:

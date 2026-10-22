@@ -54,9 +54,9 @@ def test_aposta_allin_escrita_como_raise_vira_bet():
 
 def test_consulta_soma_e_faixas(con):
     r = servidor.consultar(con, {"rua": ["flop"], "situacao": ["enfrenta aposta"]})
-    assert r["acoes"]["pop"] == {"Fold": 4, "Raise": 1}  # BTN, SB, BB, UTG foldam; UTG+1 raise
-    assert r["raise"]["pop"] == {"0,46–0,66": 1}
-    assert servidor.consultar(con, {"tamanho": ["0,34–0,45"]})["acoes"]["pop"] == {"Bet": 1}
+    # Hero e populacao juntos: BTN, SB, BB, UTG foldam e o UTG+1 da raise (o HJ/Hero nao enfrentou so a aposta)
+    assert r["geral"]["acoes"] == {"Fold": 4, "Raise": 1}
+    assert servidor.consultar(con, {"tamanho": ["0,34–0,45"]})["geral"]["acoes"] == {"Bet": 1}
 
 
 def test_filtro_fora_da_lista_branca_e_ignorado():
@@ -104,26 +104,31 @@ def test_linha_do_jogador():
 
 def test_api_resposta_resultado_agrupar(con):
     r = servidor.consultar(con, {"rua": ["flop"], "_agrupar": "situacao"})
-    bet = r["resposta"]["Bet"]["pop"]["0,34–0,45"]  # CO 21,5 em 64 = 0,336; a mesa aumentou
-    assert (bet["aumentado"], round(bet["ev"], 3)) == (1, -0.336)
-    assert r["resultado"]["pop"]["sd"] == 5  # UTG+1 (check, raise, call) e CO (bet, raise) chegam ao showdown
-    assert r["agrupado"]["pop"]["enfrenta aposta"] == {"Fold": 4, "Raise": 1, "_weak": [0, 1]}
-    assert servidor.consultar(con, {"_agrupar": "x; DROP"})["agrupado"] is None
+    resp = r["geral"]["resposta"]  # a unica bet do flop: CO 21,5 em 64 = 0,336, e a mesa aumentou
+    assert (resp["aumentado"], round(resp["ev"], 3), round(resp["tam"], 3)) == (1, -0.336, 0.336)
+    assert r["grafico"]["0,34–0,45"]["usos"] == 1 and r["grafico"]["0,34–0,45"]["aumentado"] == 1
+    # W$SD: UTG+1 (check, raise, call) e CO (bet, raise) chegam ao showdown e ganham (split +23)
+    assert r["geral"]["wsd"] == [5, 5]
+    grupos = {g["chave"]: g for g in r["grupos"]}
+    assert grupos["enfrenta aposta"]["acoes"] == {"Fold": 4, "Raise": 1}
+    assert grupos["enfrenta raise"]["n"] == 4 and grupos["livre"]["bets"] == {"0,34–0,45": 1}
+    assert servidor.consultar(con, {"_agrupar": "x; DROP"})["grupos"] == []
 
 
 def test_filtros_de_data_e_textura(con):
-    assert servidor.consultar(con, {"data": {"min": "2026-08-24", "max": "2026-08-24"}})["total"]["pop"]["decisoes"] == 14
-    assert servidor.consultar(con, {"data": {"min": "2026-08-25"}})["total"] == {}
+    # 16 decisoes no gabarito: 14 da populacao + 2 do Hero, agora somadas
+    assert servidor.consultar(con, {"data": {"min": "2026-08-24", "max": "2026-08-24"}})["geral"]["n"] == 16
+    assert servidor.consultar(con, {"data": {"min": "2026-08-25"}})["geral"] is None
     assert servidor.where({"texturas": ["river:brick"]}) == (" WHERE (instr(texturas, ?) > 0)", ["|river:brick|"])
 
 
 def test_painel(con):
     stats = {s["nome"]: s for s in servidor.painel(con, {"rua": ["river"]}) if s["secao"] == "Flop"}
     # a base da stat (rua flop) vence o filtro do usuario na mesma coluna
-    assert stats["Fold contra aposta"]["pop"] == [4, 5]   # BTN, SB, BB, UTG foldam; UTG+1 da raise
-    assert stats["Check-raise"]["pop"] == [1, 4]          # dos 4 que checaram e enfrentaram a aposta, so o UTG+1
+    assert stats["Fold contra aposta"]["v"] == [4, 5]   # BTN, SB, BB, UTG foldam; UTG+1 da raise
+    assert stats["Check-raise"]["v"] == [1, 4]          # dos 4 que checaram e enfrentaram a aposta, so o UTG+1
     sd = next(s for s in servidor.painel(con, {}) if s["nome"].startswith("Foi ao showdown"))
-    assert (sd["pop"], sd["hero"]) == ([2, 7], [0, 1])    # UTG+1 e CO de 7 na populacao; o Hero foldou
+    assert sd["v"] == [2, 8]                            # UTG+1 e CO, de 8 jogadores (Hero junto)
 
 
 def test_linha_da_mao_e_exportar(con, tmp_path):
@@ -135,3 +140,86 @@ def test_linha_da_mao_e_exportar(con, tmp_path):
     texto, n = servidor.exportar(con, {"rua": ["flop"]}, tmp_path)
     assert n == 1 and texto.startswith("PokerStars Hand #1311804268404871168")
     assert servidor.exportar(con, {"rua": ["river"]}, tmp_path) == ("\n", 0)
+
+
+def test_mesa_ignora_o_proprio_filtro(con):
+    m = servidor.consultar(con, {"n_jogadores": {"min": 7, "max": 7}, "pos": ["BTN"], "rua": ["flop"]})["mesa"]
+    # a contagem por jogadores ignora o filtro de 7, mas respeita o de posicao (BTN agiu no flop desta mao)
+    assert m["por_n"] == {"8": 1}
+    # os assentos ignoram o filtro de posicao, mas respeitam o de 7 jogadores: a mao tem 8, entao nada
+    assert m["por_pos"] == {}
+    m = servidor.consultar(con, {"pos": ["BTN"], "rua": ["flop"]})["mesa"]
+    assert m["por_pos"]["SB"] == {"Check": 1, "Fold": 1} and m["por_pos"]["BTN"] == {"Fold": 1}
+    assert m["por_pos"]["HJ"] == {"Check": 1, "Fold": 1}  # o HJ e o Hero: agora entra junto
+
+
+def test_varias_quantidades_de_jogadores():
+    assert servidor.where({"n_jogadores": [8, 7, 6, 5]}) == (" WHERE n_jogadores IN (?,?,?,?)", [8.0, 7.0, 6.0, 5.0])
+    assert servidor.where({"n_jogadores": {"min": 5, "max": 8}}) == (" WHERE n_jogadores >= ? AND n_jogadores <= ?", [5.0, 8.0])
+
+
+def test_resposta_guarda_o_tamanho_para_o_empate(con):
+    g = servidor.consultar(con, {"rua": ["flop"]})["grafico"]["0,34–0,45"]
+    assert round(g["tam"], 3) == 0.336  # empate do blefe = 0,336 / 1,336 = 25% de fold
+
+
+def test_codigos_das_faixas(con):
+    o = servidor.opcoes(con)
+    assert o["codigos"]["0,46–0,66"] == "B50" and o["codigos"]["2,00+"] == "B200+"
+    assert len(o["faixas"]) == len(o["codigos"]) == 11 and o["codigos"]["0,01–0,05"] == "B5"
+
+
+def test_tamanho_da_linha_nas_ruas_anteriores():
+    jog = {p: {"stack": 500, "net": 0, "cartas": None, "hero": 0, "ordem": i} for i, p in enumerate(("SB", "BTN"), 1)}
+    acoes = [("flop", "SB", "Bet", 2.0, 0, 20.0), ("flop", "BTN", "Call", 2.0, 0, 22.0),     # SB: B 0,10 no flop
+             ("turn", "SB", "Bet", 12.0, 0, 24.0), ("turn", "BTN", "Call", 12.0, 0, 36.0),   # SB: B 0,50 no turn
+             ("river", "SB", "Bet", 30.0, 0, 48.0), ("river", "BTN", "Fold", None, 0, 78.0)]
+    r = decisoes.linhas_da_mao("x", 2, 20.0, "", acoes, jog, False)
+    river_sb = r[4]
+    assert (river_sb[-4], river_sb[-3], river_sb[19]) == (0.1, 0.5, 0.625)  # tam_flop, tam_turn, tamanho agora
+    assert r[2][-4:-2] == (0.1, None)  # no turn so o flop ja aconteceu
+    assert r[1][-4:-2] == (None, None)  # o BTN so pagou
+    # e do lado de quem pagou: o BTN pagou 0,10 no flop e 0,50 no turn, e no river enfrenta 0,625
+    assert r[5][3] == "BTN" and r[5][-2:] == (0.1, 0.5) and r[5][12] == 0.625 and r[5][18] == "Fold"
+    assert r[3][-2:] == (0.1, None)  # no turn, o BTN ja tinha pago 0,10 no flop
+    w, p = servidor.where({"tam_flop": ["0,06–0,15"], "tam_turn": ["0,46–0,66"]})
+    assert w.count("CASE") == 2 and p == ["0,06–0,15", "0,46–0,66"]
+
+
+def test_faixa_livre_de_tamanho(con):
+    assert servidor.where({"tamanho": {"min": 0.7, "max": 1.1}}) == (" WHERE tamanho >= ? AND tamanho <= ?", [0.7, 1.1])
+    assert servidor.where({"tam_flop": {"min": "0.75", "max": ""}}) == (" WHERE tam_flop >= ?", [0.75])  # sem teto
+    # a bet do CO no gabarito e 0,336: entra em 0,30-0,40 e sai em 0,34-0,40
+    assert servidor.consultar(con, {"tamanho": {"min": 0.3, "max": 0.4}})["geral"]["acoes"] == {"Bet": 1}
+    assert servidor.consultar(con, {"tamanho": {"min": 0.34, "max": 0.4}})["geral"] is None
+
+
+def test_fold_contra_bet_e_quanto_precisava(con):
+    d = servidor.consultar(con, {"rua": ["flop"]})["geral"]["defesa"]
+    # enfrentando bet (0,336): BTN, SB, BB, UTG foldam, UTG+1 raise; enfrentando raise (0,5): MP, HJ foldam, CO raise;
+    # o UTG+1 paga o shove (0,101). 9 decisoes, 6 folds.
+    precisa = 5 * 0.336 / 1.336 + 3 * 0.5 / 1.5 + 0.101 / 1.101
+    assert d[:2] == [9, 6] and d[2] == pytest.approx(precisa, abs=1e-6)
+
+
+def test_allin_por_menos_escrito_como_raise_vira_call():
+    """Caso real (ID_1328192555300286464): BB aposta 16, UTG+1 tem 17 e vai all-in por 9: o WPT escreve "Raise"."""
+    jog = {p: {"stack": s, "net": 0, "cartas": None, "hero": 0, "ordem": i}
+           for i, (p, s) in enumerate((("BB", 431), ("UTG+1", 17), ("HJ", 100)), 1)}
+    acoes = [("flop", "BB", "Bet", 16.0, 0, 64.0), ("flop", "UTG+1", "Raise", 9.0, 1, 80.0),
+             ("flop", "HJ", "Call", 16.0, 0, 89.0), ("turn", "HJ", "Check", None, 0, 105.0)]
+    r = decisoes.linhas_da_mao("x", 3, 24.0, "", acoes, jog, False)
+    utg1, hj, hj_turn = r[1], r[2], r[3]
+    assert (utg1[18], utg1[19], utg1[11]) == ("Call", None, "enfrenta aposta")  # acao, tamanho, situacao
+    assert (hj[11], hj[12]) == ("enfrenta aposta", 0.25)  # o HJ ainda enfrenta a bet de 16 em 64, nao um "raise"
+    assert hj_turn[-2] == 0.25  # e o tamanho que ele pagou no flop e 0,25, nao negativo
+    assert r[0][decisoes.COL_RESPOSTA] == "pago"
+
+
+def test_defesa_por_faixa_do_tamanho_enfrentado(con):
+    d = servidor.consultar(con, {"rua": ["flop"]})["defesa"]
+    # contra a bet de 0,336 (B40): 4 folds e o raise do UTG+1; contra o raise de 0,5 (B50): MP e HJ foldam, CO raise;
+    # contra o shove do CO (0,101 = B10): o UTG+1 paga
+    assert {k: (v["n"], v["Fold"], v["Call"], v["Raise"]) for k, v in d.items()} == {
+        "0,34–0,45": (5, 4, 0, 1), "0,46–0,66": (3, 2, 0, 1), "0,06–0,15": (1, 0, 1, 0)}
+    assert d["0,46–0,66"]["precisa"] == pytest.approx(3 * 0.5 / 1.5)
