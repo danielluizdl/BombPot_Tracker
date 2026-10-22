@@ -11,7 +11,11 @@ tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar 
 decisoes.py    tabela derivada `decisoes`: uma linha por decisao pos-flop, com contexto, forca,
                resposta da mesa, lucro, linhas, texturas e data
 forca.py       categorias de forca do H2N + draws + weak (puro, test_forca.py)
-servidor.py    site local (127.0.0.1:8770): filtros -> WHERE em `decisoes`; painel, agrupar, exportar
+resultados.py  tabela derivada `resultados` (aba Jogadores): net, showdown e EV all-in (equity exata) por nick;
+               nick em jogadores.nome; mao com seguro/jackpot entra jogador a jogador (saldo conferido pelas
+               cartas; jackpot a parte; quem o seguro pagou e perdeu tudo = -investido, regra do Replayer)
+servidor.py    site local (127.0.0.1:8770): filtros -> WHERE em `decisoes`; painel, agrupar, exportar;
+               aba MDA (`mda()`): arvore de acoes por rua, bet sizes com -AI, afunilar flop -> turn -> river
 public/        a tela (HTML/JS puro, tema do DESIGN.md do MetaLens)
 PLANO_H2N.md   pesquisa H2N/HM3, debate e prioridades (todas as 7 fatias feitas)
 test_banco_real.py  refaz as contas do site direto da tabela acoes (independente) no banco real; pulado sem bombpot.db
@@ -19,6 +23,8 @@ test_banco_real.py  refaz as contas do site direto da tabela acoes (independente
 
 Quirks do WPT:
 - aposta all-in sem aposta antes vem escrita como "Raise"; `decisoes` e a linha da mao normalizam para Bet;
+- valores: Bet = aposta, Raise = total na rua, Call = complemento; MAS call all-in (e "Raise" all-in por menos)
+  vem com o total do jogador na rua (ID_1312645872378032128: bet 110, "Call 299 All-in" = 299 no river);
 - o HAND ID e um snowflake: `id >> 22` = ms desde 2016-09-25 08:28:07,268 (hora do print, erro <= 1 s).
 
 Ao escrever Python por heredoc no Bash desta maquina, `\\r`/`\\n` dentro de string viraram caracteres de

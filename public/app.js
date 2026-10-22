@@ -212,7 +212,8 @@ function montarComando() {
 
 function mostrarAtivos() {
   const box = $('ativos');
-  const ativos = Object.entries(filtros).filter(([c]) => c !== '_agrupar' && DEF[c]);
+  // na MDA, os filtros que a árvore controla não valem: não aparecem como pílula
+  const ativos = Object.entries(filtros).filter(([c]) => c !== '_agrupar' && DEF[c] && !(vista === 'mda' && DA_ARVORE.has(c)));
   if (!ativos.length) { box.replaceChildren(el('span', { className: 'vazio', textContent: 'Sem filtros: todas as decisões de todas as mãos.' })); return; }
   box.replaceChildren(...ativos.map(([col, v]) => el('span', { className: 'pilula' }, [
     `${DEF[col][1]}: ${descreverValor(col, v)}`,
@@ -593,6 +594,337 @@ function cartaoMesa(m) {
     quadro]);
 }
 
+// ------------------------------------------------------------------------- MDA (árvore de ações, estilo H2N)
+// Colunas FLOP / TURN / RIVER com os nós da árvore; clicar numa ação abre os bet sizes; "afunilar" leva a linha
+// escolhida para a rua seguinte. Rua, situação, linha e tamanhos vêm da árvore; os outros filtros valem.
+
+const DA_ARVORE = new Set(['rua', 'situacao', 'ip', 'linha_flop', 'linha_turn', 'tam_flop', 'tam_turn', 'enf_flop', 'enf_turn',
+  'acao', 'tamanho', 'tamanho_enfrentado', 'decisao_n', 'checou_antes', 'resposta', '_agrupar']);
+const RUAS_MDA = ['flop', 'turn', 'river'];
+const NOME_RUA = { flop: 'Flop', turn: 'Turn', river: 'River' };
+const MINIMO_NO = 10;  // nós com menos decisões ficam recolhidos em "mais linhas"
+const FAIXAS_MDA = () => [...opcoes.faixas_h2n].reverse();  // as faixas do H2N, da maior para a menor
+let caminho = lerLocal('bp.caminho') ?? {};
+let mdaSel = null;  // { rua, chave, acao }
+let mdaDados = null;
+const letrasEmPalavras = s => (s ? linhaEmPalavras(s) : '');
+
+function descreverNo(no) {
+  if (!no.atual) return no.situ === 'livre' ? 'primeira ação, ninguém apostou' : 'primeira ação, enfrenta bet';
+  if (no.atual.endsWith('X')) return `depois de ${letrasEmPalavras(no.atual)}, enfrenta bet`;
+  return `depois de ${letrasEmPalavras(no.atual)}, ${no.atual.endsWith('B') || no.atual.endsWith('R') ? 'levou raise' : 'enfrenta bet'}`;
+}
+// Rótulo da linha no estilo do H2N: as ruas separadas por " - ", as letras dele em cada rua.
+const rotuloLinha = (no, acao) => [...no.prefixo, no.atual + LETRA_ACAO[acao]].join(' - ');
+
+function salvarCaminho() { gravarLocal('bp.caminho', caminho); }
+function afunilar(rua, linha, faixa, lado) {
+  caminho = { ...caminho, [rua]: { linha, faixa, lado } };
+  if (rua === 'flop') delete caminho.turn;  // mudar o flop invalida o que estava escolhido no turn
+  salvarCaminho();
+  mdaSel = null;
+  consultar();
+}
+function tirarCaminho(rua) {
+  caminho = rua === 'flop' ? {} : { flop: caminho.flop };
+  salvarCaminho();
+  mdaSel = null;
+  consultar();
+}
+
+function barraMda() {
+  const pos = filtros.pos?.length === 1 ? filtros.pos[0] : null;
+  const segPos = el('div', { className: 'seg', role: 'group', 'aria-label': 'Posição' });
+  for (const p of ['Todas', ...AGE]) {
+    const ativo = p === 'Todas' ? !filtros.pos : pos === p;
+    segPos.append(el('button', { type: 'button', textContent: p, ariaPressed: String(ativo), onclick: () => {
+      if (p === 'Todas') delete filtros.pos; else filtros.pos = [p];
+      mdaSel = null;
+      mudou();
+    } }));
+  }
+  const jog = Array.isArray(filtros.n_jogadores) ? filtros.n_jogadores : null;
+  const segJog = el('div', { className: 'seg', role: 'group', 'aria-label': 'Jogadores' });
+  for (let k = 8; k >= 2; k--) {
+    segJog.append(el('button', { type: 'button', textContent: String(k), ariaPressed: String(!!jog?.includes(k)), onclick: () => {
+      const s = new Set(jog ?? []);
+      s.has(k) ? s.delete(k) : s.add(k);
+      if (s.size) filtros.n_jogadores = [...s].sort((a, b) => b - a); else delete filtros.n_jogadores;
+      mudou();
+    } }));
+  }
+  const passos = Object.entries(caminho).filter(([, v]) => v?.linha).map(([rua, v]) => el('span', { className: 'pilula' }, [
+    `${NOME_RUA[rua]}: ${letrasEmPalavras(v.linha)}${v.faixa ? ` ${v.lado === 'pagou' ? 'pagando' : ''} ${cod(v.faixa)} (${v.faixa})` : ''}`,
+    el('button', { type: 'button', textContent: '×', title: 'Tirar este passo', onclick: () => tirarCaminho(rua) })]));
+  return el('div', { className: 'mda-barra' }, [
+    el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Posição' }), segPos]),
+    el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Jogadores na mesa (marque vários)' }), segJog]),
+    el('div', { className: 'grupo-cmd caminho' }, [el('span', { textContent: 'Caminho (afunilar)' }),
+      el('div', { className: 'chips' }, passos.length ? passos : [el('span', { className: 'vazio', textContent: 'clique numa ação e em "afunilar" para seguir a linha na rua seguinte' })])]),
+    el('div', { className: 'fim' }, [el('button', { className: 'btn', type: 'button', textContent: 'Mais filtros', onclick: abrirAvancado })]),
+  ]);
+}
+
+function colunaMda(rua, nos) {
+  const visiveis = nos.filter(n => n.n >= MINIMO_NO), pequenos = nos.filter(n => n.n < MINIMO_NO);
+  const cartaoNo = no => {
+    const cab = el('div', { className: 'mda-no-cab' }, [
+      no.prefixo.length ? el('b', { textContent: no.prefixo.join(' - ') + ' ›' }) : null,
+      el('span', { textContent: descreverNo(no) }), el('small', { textContent: `${no.n}` })]);
+    const linhas = ACOES.filter(a => no.acoes[a]).map(a => {
+      const n = no.acoes[a], ativo = mdaSel && mdaSel.rua === rua && mdaSel.chave === no.chave && mdaSel.acao === a;
+      return el('button', { type: 'button', className: 'mda-acao' + (ativo ? ' ativa' : ''), title: `${a}: ${tituloIC(n, no.n)} · clique para ver os tamanhos`,
+        onclick: () => { mdaSel = ativo ? null : { rua, chave: no.chave, acao: a }; desenharMda(); } }, [
+        el('span', { className: 'rot', textContent: rotuloLinha(no, a) }),
+        el('span', { className: 'barrinha' }, [el('i', { style: `width:${100 * n / no.n}%;background:${COR[a]}` })]),
+        el('b', { className: no.n < AMOSTRA_MINIMA ? 'fraca' : '', textContent: `${pct(n, no.n)}%` }), el('small', { textContent: String(n) })]);
+    });
+    return el('div', { className: 'mda-no' }, [cab, ...linhas]);
+  };
+  return el('section', { className: 'mda-col' }, [
+    el('h3', {}, [NOME_RUA[rua], rua !== 'flop' && caminho[rua === 'turn' ? 'flop' : 'turn'] ? el('small', { textContent: ' afunilado' }) : null]),
+    ...(nos.length ? visiveis.map(cartaoNo) : [el('p', { className: 'nota', textContent: 'Nenhuma decisão nesta rua com este caminho.' })]),
+    pequenos.length ? el('details', { className: 'mda-pequenos' }, [el('summary', { textContent: `mais ${pequenos.length} linhas com menos de ${MINIMO_NO} decisões` }),
+      ...pequenos.map(cartaoNo)]) : null,
+  ]);
+}
+
+function detalheMda() {
+  if (!mdaSel || !mdaDados) return null;
+  const no = mdaDados[mdaSel.rua].find(n => n.chave === mdaSel.chave);
+  if (!no) return null;
+  const acao = mdaSel.acao, rua = mdaSel.rua, seguinte = rua !== 'river';
+  const titulo = `${NOME_RUA[rua]} · ${rotuloLinha(no, acao)}`;
+  const linhaAtual = no.atual + LETRA_ACAO[acao];
+  const botaoAfunilar = (faixa, lado) => seguinte ? el('button', { className: 'ver', type: 'button', textContent: `afunilar → ${NOME_RUA[rua === 'flop' ? 'turn' : 'river']}`,
+    title: `Mostrar o ${rua === 'flop' ? 'turn' : 'river'} só de quem fez esta linha${faixa ? ` com ${cod(faixa)}` : ''}`,
+    onclick: () => afunilar(rua, linhaAtual, faixa, lado) }) : el('span');
+  const corpo = el('tbody');
+  let cab, nota;
+  if (acao === 'Bet' || acao === 'Raise') {
+    const tam = no.tamanhos[acao] ?? {};
+    // como no H2N: do maior para o menor, primeiro sem all-in e depois os "-AI"
+    const chaves = [...FAIXAS_MDA(), ...FAIXAS_MDA().map(f => f + '|AI')].filter(k => tam[k]);
+    for (const k of chaves) {
+      const d = tam[k], [faixa, ai] = k.split('|');
+      const cel = n => el('td', { className: 'num' + (d.n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(n, d.n) }, [
+        el('b', { textContent: `${pct(n, d.n)}%` }), el('small', { textContent: ` ${n}` })]);
+      const dep = d.depois, totalDep = dep.Fold + dep.Call + dep.Raise;
+      // como na Resposta ao sizing do Estudo: só as bets que a mesa respondeu, pela bet média da faixa
+      const medio = d.respondidas ? d.tam / d.respondidas : 0, precisa = 100 * medio / (1 + medio);
+      const ev = d.respondidas ? 100 * d.ev / d.respondidas : 0, fold = pct(d['todos foldam'], d.respondidas);
+      const fraca = d.respondidas < AMOSTRA_MINIMA ? ' fraca' : '';
+      corpo.append(el('tr', {}, [
+        el('th', {}, [el('span', { className: 'tam' }, [el('b', { textContent: cod(faixa) + (ai ? '-AI' : '') }), el('small', { textContent: faixa + (ai ? ' · all-in' : '') })])]),
+        el('td', { className: 'num', title: `${d.n} de ${no.n} decisões do nó` }, [el('b', { textContent: `${fmt(100 * d.n / no.n, 1)}%` }), el('small', { textContent: ` ${d.n}` })]),
+        el('td', { className: 'num' + fraca, title: tituloIC(d['todos foldam'], d.respondidas) }, [
+          el('b', { className: d.respondidas ? (fold >= precisa ? 'bom' : 'ruim') : '', textContent: `${fold}%` }), el('small', { textContent: ` ${d['todos foldam']}` })]),
+        el('td', { className: 'num' + fraca, title: `bet média ${fmt(medio)} do pote: ${fmt(medio)} ÷ (1 + ${fmt(medio)})` }, [
+          el('b', { textContent: d.respondidas ? `${Math.round(precisa)}%` : '—' })]),
+        el('td', { className: 'num' + fraca, title: d.respondidas ? `${d.respondidas} bets com resposta` : '' }, [
+          el('b', { className: ev > 2 ? 'bom' : ev < -2 ? 'ruim' : 'neutro', textContent: d.respondidas ? `${ev >= 0 ? '+' : ''}${fmt(ev, 0)}` : '—' })]),
+        cel(d['1 call']), cel(d['2 calls']), cel(d['3+ calls']), cel(d.aumentado),
+        el('td', { className: 'num', title: 'Quando levou raise, o que ele fez depois' }, [totalDep
+          ? `F ${pct(dep.Fold, totalDep)}% · C ${pct(dep.Call, totalDep)}% · R ${pct(dep.Raise, totalDep)}%` : '—']),
+        el('td', {}, [ai ? el('span') : botaoAfunilar(faixa, 'aposta')]),
+      ]));
+    }
+    cab = ['Tamanho', 'Freq. no nó', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (ele)', ''];
+    nota = 'Freq. no nó = quantas vezes ele fez esta bet com este tamanho, entre todas as decisões do nó (como a coluna "Fre" do H2N). '
+      + 'As colunas seguintes dizem o que a mesa fez depois dessa bet; "-AI" = all-in. Todos foldam fica verde quando passa do "precisa foldar" '
+      + '(bet ÷ (1 + bet)); EV blefe, em % do pote: +1 pote se todos foldam, −a bet se não, como na Resposta ao sizing do Estudo. '
+      + 'Afunilar segue para a rua seguinte só quem fez essa bet e não levou raise.';
+  } else {
+    const enf = no.enfrentado ?? {};
+    for (const f of FAIXAS_MDA().filter(f => enf[f])) {
+      const d = enf[f], n = (d.Fold ?? 0) + (d.Call ?? 0) + (d.Raise ?? 0) + (d.Check ?? 0) + (d.Bet ?? 0);
+      const cel = (x, cls = '') => el('td', { className: 'num' + (n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(x ?? 0, n) }, [
+        el('b', { className: cls, textContent: `${pct(x ?? 0, n)}%` }), el('small', { textContent: ` ${x ?? 0}` })]);
+      corpo.append(el('tr', { className: acao && d[acao] ? '' : 'fraca' }, [
+        el('th', {}, [el('span', { className: 'tam' }, [el('b', { textContent: cod(f) }), el('small', { textContent: f })])]),
+        el('td', { className: 'num' }, [el('b', { textContent: String(n) })]),
+        cel(d.Fold, acao === 'Fold' ? 'destaque' : ''), cel(d.Call, acao === 'Call' ? 'destaque' : ''), cel(d.Raise, acao === 'Raise' ? 'destaque' : ''),
+        el('td', { className: 'num', title: 'média, mão a mão, de bet ÷ (1 + bet)' }, [`${pct(d.precisa, n)}%`]),
+        el('td', {}, [acao === 'Call' && d.Call ? botaoAfunilar(f, 'pagou') : el('span')]),
+      ]));
+    }
+    cab = ['Bet enfrentada', 'Decisões', 'Fold', 'Call', 'Raise', 'Precisa foldar', ''];
+    nota = 'O que ele fez contra cada tamanho de bet, neste nó. "Precisa foldar" é o fold em que um blefe contra ele empata. '
+      + 'Afunilar (no call) segue para a rua seguinte só quem pagou aquele tamanho.';
+  }
+  return cartao('mda-detalhe', titulo, acao === 'Bet' || acao === 'Raise' ? 'bet sizes: o tamanho e o que a mesa fez' : 'por tamanho da bet enfrentada', [
+    el('div', { className: 'controles-card' }, [botaoAfunilar(null, 'aposta'),
+      el('button', { className: 'ver', type: 'button', textContent: 'fechar', onclick: () => { mdaSel = null; desenharMda(); } })]),
+    corpo.children.length ? el('div', { className: 'rolar' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, cab.map(c => el('th', { textContent: c })))]), corpo])]) : el('p', { className: 'nota', textContent: 'Sem tamanhos para mostrar.' }),
+    el('p', { className: 'nota', textContent: nota })]);
+}
+
+function desenharMda() {
+  if (!mdaDados) return;
+  const detalhe = detalheMda();
+  $('mda').replaceChildren(barraMda(), el('div', { className: 'mda-grade' }, RUAS_MDA.map(r => colunaMda(r, mdaDados[r]))), ...(detalhe ? [detalhe] : []));
+  if (detalhe) detalhe.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+async function consultarMda(meu) {
+  const r = await (await fetch('/api/mda', { method: 'POST', body: JSON.stringify({ filtros, caminho }) })).json();
+  if (meu !== pedido) return;
+  document.body.classList.remove('carregando');
+  if (r.erro) { $('mda').replaceChildren(el('p', { className: 'nota', textContent: 'Erro: ' + r.erro })); return; }
+  mdaDados = r;
+  if (mdaSel && !mdaDados[mdaSel.rua]?.some(n => n.chave === mdaSel.chave)) mdaSel = null;
+  desenharMda();
+}
+
+// ------------------------------------------------------------------------- Jogadores (gráfico de resultado, como no MetaLens)
+// Lista por número de mãos; o gráfico mão a mão do jogador escolhido: Net, com e sem showdown, e o EV ajustado por all-in.
+
+const LINHAS_GRAFICO = [
+  { nome: 'Net', cor: 'var(--g-net)', y: p => p[1] },
+  { nome: 'Com showdown', cor: 'var(--g-sd)', y: p => p[2] },
+  { nome: 'Sem showdown', cor: 'var(--g-nsd)', y: p => p[1] - p[2] },
+  { nome: 'EV all-in', cor: 'var(--g-ev)', y: p => p[3] },
+  { nome: 'Net + jackpot', cor: 'var(--g-jp)', y: p => p[1] + p[5], so: s => s.pontos[s.pontos.length - 1][5] !== 0 },
+];
+// a linha do jackpot só aparece para quem ganhou jackpot
+const linhasDe = s => LINHAS_GRAFICO.filter(l => !l.so || l.so(s));
+const desligadas = new Set();
+let listaJogadores = null, jogadorSel = lerLocal('bp.jogador'), buscaJogador = '', serieAtual = null;
+const bb = (v, casas = 1) => `${v < 0 ? '−' : v > 0 ? '+' : ''}${fmt(Math.abs(v), casas)} BB`;
+const por100 = (v, maos) => (maos ? 100 * v / maos : 0);
+const corValor = v => (v > 0 ? 'bom' : v < 0 ? 'ruim' : '');
+
+function tabelaJogadores() {
+  const termo = buscaJogador.trim().toLowerCase();
+  const lista = listaJogadores.jogadores.filter(j => !termo || j.nome.toLowerCase().includes(termo));
+  const corpo = el('tbody', {}, lista.slice(0, 300).map(j => el('tr', {
+    className: 'jogador' + (j.nome === jogadorSel ? ' ativo' : ''), tabIndex: 0,
+    onclick: () => escolherJogador(j.nome), onkeydown: e => { if (e.key === 'Enter') escolherJogador(j.nome); },
+  }, [
+    el('th', { textContent: j.nome }),
+    el('td', { className: 'num', textContent: j.maos.toLocaleString('pt-BR') }),
+    el('td', { className: 'num' }, [el('b', { className: corValor(j.net), textContent: bb(j.net, 0) })]),
+    el('td', { className: 'num' }, [el('b', { className: corValor(j.net), textContent: fmt(por100(j.net, j.maos), 1) })]),
+    el('td', { className: 'num' }, [el('span', { className: corValor(j.ev), textContent: fmt(por100(j.ev, j.maos), 1) })]),
+  ])));
+  return el('div', { className: 'card lista-jogadores' }, [
+    el('input', { type: 'search', placeholder: `procurar entre ${listaJogadores.jogadores.length.toLocaleString('pt-BR')} jogadores`,
+      value: buscaJogador, ariaLabel: 'Procurar jogador', oninput: e => { buscaJogador = e.target.value; redesenharLista(); } }),
+    el('div', { className: 'rolar' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, [['Jogador'], ['Mãos'], ['Net'], ['BB/100'], ['EV BB/100', 'BB/100 pelo EV ajustado por all-in']]
+        .map(([c, d]) => el('th', d ? { textContent: c, title: d } : { textContent: c })))]), corpo])]),
+    lista.length > 300 ? el('p', { className: 'nota', textContent: `mostrando 300 de ${lista.length}: procure pelo nome para achar os outros` }) : null,
+  ]);
+}
+function redesenharLista() {
+  const velha = document.querySelector('#jogadores .lista-jogadores');
+  if (velha) velha.replaceWith(tabelaJogadores());
+  document.querySelector('#jogadores .lista-jogadores input')?.focus();
+}
+
+async function escolherJogador(nome) {
+  jogadorSel = nome;
+  gravarLocal('bp.jogador', nome);
+  serieAtual = await (await fetch('/api/serie', { method: 'POST', body: JSON.stringify({ nome }) })).json();
+  desenharJogadores();
+}
+
+const passoRedondo = (faixa, n) => {
+  const cru = faixa / n || 1, p = 10 ** Math.floor(Math.log10(cru));
+  return [1, 2, 5, 10].map(m => m * p).find(s => s >= cru);
+};
+
+function graficoJogador(s, caixa) {
+  const pts = s.pontos, ult = pts[pts.length - 1], maos = s.maos;
+  const ligadas = linhasDe(s).filter(l => !desligadas.has(l.nome));
+  const legenda = el('div', { className: 'legenda' }, linhasDe(s).map(l => el('button', {
+    type: 'button', ariaPressed: String(!desligadas.has(l.nome)),
+    onclick: () => { if (!desligadas.delete(l.nome)) desligadas.add(l.nome); desenharJogadores(); },
+  }, [el('i', { style: `background:${l.cor}` }), l.nome, el('b', { textContent: bb(l.y(ult)) }),
+    el('small', { textContent: `${fmt(por100(l.y(ult), maos), 1)} BB/100` })])));
+  const W = Math.max(caixa.clientWidth - 30, 300), H = 380, E = 70, D = 12, T = 10, B = 26;
+  const ys = pts.flatMap(p => ligadas.map(l => l.y(p)));
+  let lo = Math.min(0, ...ys), hi = Math.max(0, ...ys);
+  const passo = passoRedondo(hi - lo, 6);
+  lo = Math.floor(lo / passo) * passo; hi = Math.max(Math.ceil(hi / passo) * passo, lo + passo);
+  const X = i => E + (i / Math.max(maos, 1)) * (W - E - D);
+  const Y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const g = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': `Resultado de ${maos} mãos de ${s.nome}` });
+  for (let k = Math.round(lo / passo); k <= Math.round(hi / passo); k++) {
+    g.append(svg('line', { x1: E, x2: W - D, y1: Y(k * passo), y2: Y(k * passo), class: k === 0 ? 'zero' : 'grade' }),
+      svg('text', { x: E - 6, y: Y(k * passo) + 4, 'text-anchor': 'end' }, [`${fmt(k * passo, 0)}`]));
+  }
+  const px = passoRedondo(maos, 6);
+  for (let i = 0; i <= maos; i += px) g.append(svg('text', { x: X(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : 'middle' }, [i.toLocaleString('pt-BR')]));
+  for (const l of [...ligadas].reverse()) {  // o Net por cima
+    const linha = svg('polyline', { fill: 'none', 'stroke-width': 1.6, 'stroke-linejoin': 'round',
+      points: pts.map(p => `${X(p[0]).toFixed(1)},${Y(l.y(p)).toFixed(1)}`).join(' ') });
+    linha.style.stroke = l.cor;
+    g.append(linha);
+  }
+  const cursor = svg('line', { y1: T, y2: H - B, class: 'cursor', visibility: 'hidden' });
+  g.append(cursor);
+  const dica = el('div', { className: 'dica', hidden: true });
+  g.addEventListener('mousemove', e => {
+    const r = g.getBoundingClientRect();
+    const i = (((e.clientX - r.left) * (W / r.width) - E) / (W - E - D)) * maos;
+    let a = 0, b = pts.length - 1;
+    while (b - a > 1) { const m = (a + b) >> 1; if (pts[m][0] < i) a = m; else b = m; }
+    const p = Math.abs(pts[a][0] - i) < Math.abs(pts[b][0] - i) ? pts[a] : pts[b];
+    for (const k of ['x1', 'x2']) cursor.setAttribute(k, String(X(p[0])));
+    cursor.setAttribute('visibility', 'visible');
+    dica.replaceChildren(el('div', {}, [el('b', { textContent: `mão ${p[0].toLocaleString('pt-BR')}` }), el('span', { textContent: p[4] ?? '' })]),
+      ...ligadas.map(l => el('div', {}, [el('span', { textContent: l.nome, style: `color:${l.cor}` }), el('b', { textContent: bb(l.y(p)) })])));
+    dica.hidden = false;
+    const bx = caixa.getBoundingClientRect(), x = e.clientX - bx.left;
+    dica.style.left = `${x + 230 > bx.width ? x - 240 : x + 16}px`;
+    dica.style.top = `${e.clientY - bx.top + 12}px`;
+  });
+  g.addEventListener('mouseleave', () => { dica.hidden = true; cursor.setAttribute('visibility', 'hidden'); });
+  return [legenda, g, dica];
+}
+
+function desenharJogadores() {
+  if (!listaJogadores) return;
+  const caixa = el('div', { className: 'card grafico-jogador' });
+  $('jogadores').replaceChildren(el('div', { className: 'jogadores-grade' }, [tabelaJogadores(), caixa]));
+  const s = serieAtual;
+  if (!s || s.nome !== jogadorSel) return;
+  if (!s.maos) { caixa.append(el('p', { className: 'nota', textContent: 'Sem mãos para este jogador.' })); return; }
+  const ult = s.pontos[s.pontos.length - 1];
+  caixa.append(
+    el('div', { className: 'cab-jogador' }, [el('h2', { textContent: s.nome }),
+      el('span', { textContent: `${s.maos.toLocaleString('pt-BR')} mãos · ` }),
+      el('b', { className: corValor(ult[1]), textContent: `${fmt(por100(ult[1], s.maos), 1)} BB/100` }),
+      el('span', { textContent: ` · EV ${fmt(por100(ult[3], s.maos), 1)} BB/100` })]),
+    ...graficoJogador(s, caixa),
+    el('p', { className: 'nota', textContent: [
+      `${s.maos.toLocaleString('pt-BR')} mãos em ordem cronológica (pela hora do HAND ID), em BB de cada mesa`,
+      'com showdown = mãos em que ele ficou até o fim com mais alguém (mostrando ou não); sem showdown = Net − com showdown',
+      'EV all-in: quando o dinheiro entrou antes do river, ele leva a equity dele em cada pote (todos os boards que faltavam), não o que saiu',
+      ult[5] ? `Net + jackpot: soma os ${fmt(ult[5], 1)} BB de jackpot pagos pela casa, que ficam fora do Net (só poker)` : '',
+      'mão com seguro ou jackpot entra para quem tem o saldo batendo com o poker pelas cartas (o jackpot é descontado)',
+      listaJogadores.fora.seguro_reconstruido ? `${listaJogadores.fora.seguro_reconstruido} saldos de quem o seguro pagou viraram o resultado do poker (perdeu tudo pelas cartas: menos o que investiu)` : '',
+      listaJogadores.fora.saldo_nao_confere ? `${listaJogadores.fora.saldo_nao_confere} saldos de seguro ficam fora: ele levou parte do pote e o valor depende do resíduo do WPT` : '',
+      listaJogadores.fora.sem_nick ? `${listaJogadores.fora.sem_nick} mãos sem o nick de alguém ficam fora` : '',
+    ].filter(Boolean).join(' · ') }));
+}
+
+async function consultarJogadores(meu) {
+  if (!listaJogadores) listaJogadores = await (await fetch('/api/jogadores', { method: 'POST', body: '{}' })).json();
+  if (meu !== pedido) return;
+  document.body.classList.remove('carregando');
+  if (!jogadorSel || !listaJogadores.jogadores.some(j => j.nome === jogadorSel)) jogadorSel = listaJogadores.jogadores[0]?.nome;
+  if (jogadorSel && serieAtual?.nome !== jogadorSel) return escolherJogador(jogadorSel);
+  desenharJogadores();
+}
+let tempoRedim;
+window.addEventListener('resize', () => {
+  clearTimeout(tempoRedim);
+  tempoRedim = setTimeout(() => { if (vista === 'jogadores') desenharJogadores(); }, 150);
+});
+
 // ------------------------------------------------------------------------- consulta e desenho
 
 function quadrosDeSizing(r) {
@@ -613,15 +945,18 @@ function barraQuadros() {
 }
 
 let pedido = 0;
-let vista = lerLocal('bp.vista2') === 'painel' ? 'painel' : 'estudo';
+let vista = ['painel', 'mda', 'jogadores'].includes(lerLocal('bp.vista2')) ? lerLocal('bp.vista2') : 'estudo';
 let filtroA = lerLocal('bp.filtroA');
 
 async function consultar() {
+  if (!opcoes) return;  // trocou de aba durante a carga: o início chama trocarVista(vista) quando as opções chegarem
   const meu = ++pedido;
   montarComando();
   mostrarAtivos();
   document.body.classList.add('carregando');
   if (vista === 'painel') return consultarPainel(meu);
+  if (vista === 'mda') return consultarMda(meu);
+  if (vista === 'jogadores') return consultarJogadores(meu);
   const [r, a] = await Promise.all([
     fetch('/api/consulta', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json()),
     filtroA ? fetch('/api/consulta', { method: 'POST', body: JSON.stringify(filtroA) }).then(x => x.json()) : null]);
@@ -677,8 +1012,14 @@ function trocarVista(v) {
   gravarLocal('bp.vista2', v);
   $('estudo').hidden = v !== 'estudo';
   $('painel').hidden = v !== 'painel';
+  $('mda').hidden = v !== 'mda';
+  $('jogadores').hidden = v !== 'jogadores';
+  $('comando').hidden = v === 'mda' || v === 'jogadores';
+  $('ativos').hidden = v === 'jogadores';  // na MDA, rua/situação/linha vêm da árvore; Jogadores não filtra
   $('aba-estudo').setAttribute('aria-selected', String(v === 'estudo'));
   $('aba-painel').setAttribute('aria-selected', String(v === 'painel'));
+  $('aba-mda').setAttribute('aria-selected', String(v === 'mda'));
+  $('aba-jogadores').setAttribute('aria-selected', String(v === 'jogadores'));
   mudou();
 }
 
@@ -820,6 +1161,8 @@ $('fundo').onclick = fecharAvancado;
 document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharAvancado(); });
 $('aba-estudo').onclick = () => trocarVista('estudo');
 $('aba-painel').onclick = () => trocarVista('painel');
+$('aba-mda').onclick = () => trocarVista('mda');
+$('aba-jogadores').onclick = () => trocarVista('jogadores');
 
 // ------------------------------------------------------------------------- início
 

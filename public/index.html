@@ -34,6 +34,7 @@ select, .btn { background: var(--card); border: 1px solid var(--line); border-ra
 .btn { cursor: pointer; } .btn:hover, select:hover { border-color: var(--line-2); }
 .btn.primario { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 
+[hidden] { display: none !important; }
 /* --- barra de comando --- */
 #comando { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding: 14px 18px; border-bottom: 1px solid var(--line); background: #14161b; }
 .grupo-cmd { display: flex; flex-direction: column; gap: 4px; }
@@ -140,6 +141,57 @@ td.fraca, td .fraca { opacity: .45; }
 .cartas span { margin-right: 3px; font-weight: 700; }
 .naipe-s { color: #c8c8c8; } .naipe-h { color: #e05555; } .naipe-d { color: #3aa0f0; } .naipe-c { color: #4cc38a; }
 
+/* --- MDA --- */
+.mda-barra { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.mda-barra .caminho { flex: 1 1 320px; } .mda-barra .vazio { color: var(--muted); font-size: 12px; }
+.mda-grade { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .mda-grade { grid-template-columns: 1fr; } }
+.mda-col h3 { margin: 0 0 8px; font-size: 22px; letter-spacing: .5px; } .mda-col h3 small { color: var(--accent); font-size: 12px; font-weight: 400; }
+.mda-no { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; padding: 6px 8px 8px; }
+.mda-no-cab { display: flex; gap: 6px; align-items: baseline; color: var(--bom); font-size: 12px; padding: 2px 2px 6px; }
+.mda-no-cab b { color: var(--text); } .mda-no-cab small { margin-left: auto; color: var(--muted); }
+.mda-acao { display: grid; grid-template-columns: minmax(80px, 1.2fr) 1fr 48px 46px; gap: 8px; align-items: center; width: 100%;
+  background: none; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; cursor: pointer; text-align: left; }
+.mda-acao:hover { background: var(--card-2); }
+.mda-acao.ativa { border-color: var(--accent); background: #262d14; }
+.mda-acao .rot { font-variant-numeric: tabular-nums; }
+.mda-acao b { text-align: right; } .mda-acao small { color: var(--muted); font-size: 11px; }
+.barrinha { height: 6px; background: var(--card-2); border-radius: 3px; overflow: hidden; } .barrinha i { display: block; height: 100%; }
+.mda-pequenos summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 2px 8px; }
+b.destaque { color: var(--accent); }
+
+/* --- jogadores (cores do gráfico do MetaLens) --- */
+:root { --g-net: #4caf7d; --g-sd: #5b9bd5; --g-nsd: #e8564d; --g-ev: #f5c518; --g-jp: #b07fe8; }
+.jogadores-grade { display: grid; grid-template-columns: minmax(300px, 470px) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1000px) { .jogadores-grade { grid-template-columns: 1fr; } }
+.lista-jogadores { padding: 10px; }
+.lista-jogadores input { width: 100%; margin-bottom: 8px; padding: 8px 10px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); }
+.lista-jogadores .rolar { max-height: 70vh; overflow: auto; }
+.lista-jogadores tr.jogador { cursor: pointer; }
+.lista-jogadores tr.jogador:hover { background: var(--card-2); }
+.lista-jogadores tr.jogador.ativo { background: #262d14; }
+.lista-jogadores tr.jogador.ativo th { color: var(--accent); }
+.lista-jogadores table { width: 100%; font-size: 13px; } .lista-jogadores td, .lista-jogadores th { padding: 7px 6px; }
+.lista-jogadores th { text-align: left; font-weight: 500; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grafico-jogador { position: relative; padding: 12px 14px; }
+.cab-jogador { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.cab-jogador h2 { margin: 0 8px 0 0; font-size: 20px; }
+.legenda { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.legenda button { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 12px; background: var(--card-2);
+  border: 1px solid var(--line); border-radius: 999px; color: var(--text); font-size: 13px; cursor: pointer; }
+.legenda button[aria-pressed="false"] { color: var(--dim); }
+.legenda button[aria-pressed="false"] i { opacity: .25; }
+.legenda i { width: 14px; height: 3px; border-radius: 2px; }
+.legenda small { color: var(--muted); }
+.grafico-jogador svg { width: 100%; display: block; }
+.grafico-jogador svg text { fill: var(--muted); font-size: 11px; }
+.grafico-jogador .grade { stroke: var(--line); stroke-width: 1; }
+.grafico-jogador .zero { stroke: var(--muted); stroke-width: 1; }
+.grafico-jogador .cursor { stroke: var(--muted); stroke-dasharray: 3 3; }
+.dica { position: absolute; pointer-events: none; background: var(--card-2); border: 1px solid var(--line-2); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; white-space: nowrap; z-index: 3; }
+.dica div { display: flex; justify-content: space-between; gap: 14px; }
+
 /* --- painel --- */
 .painel-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
 tr.clicavel { cursor: pointer; }
@@ -191,6 +243,8 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
   <div class="abas" role="tablist">
     <button role="tab" id="aba-estudo" aria-selected="true">Estudo</button>
     <button role="tab" id="aba-painel" aria-selected="false">Painel de tendências</button>
+    <button role="tab" id="aba-mda" aria-selected="false">MDA</button>
+    <button role="tab" id="aba-jogadores" aria-selected="false">Jogadores</button>
   </div>
   <div class="direita">
     <select id="presets" aria-label="Filtros prontos"><option value="">Filtros prontos…</option></select>
@@ -204,6 +258,8 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 <div id="ativos"></div>
 <main id="estudo"></main>
 <main id="painel" hidden></main>
+<main id="mda" hidden></main>
+<main id="jogadores" hidden></main>
 <div id="fundo" hidden></div>
 <aside id="avancado" aria-label="Mais filtros">
   <header><div class="logo">Mais filtros</div><div class="direita"><button class="btn" id="fechar-avancado">Fechar</button></div></header>

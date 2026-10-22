@@ -3,6 +3,7 @@
     python tracker.py processar [pasta]   le os PNGs da pasta (padrao: entrada/)
     python tracker.py vigiar [segundos]   fica lendo entrada/ a cada N segundos
     python tracker.py refazer             rele processadas/ (quando o Poker_Replayer melhorar)
+    python tracker.py nomes               preenche o nick das maos lidas antes da coluna `nome` existir
 
 Le em BOMBPOT_PROCESSOS processos (padrao 3); so o processo principal grava.
 
@@ -13,6 +14,7 @@ mao com issues e recusada (R2); o vigia so le PNG de tamanho estavel (R3).
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -48,9 +50,10 @@ CREATE TABLE IF NOT EXISTS acoes (
 );
 CREATE INDEX IF NOT EXISTS acoes_rua_verbo ON acoes (rua, verbo);
 -- ordem_flop: 1 = primeiro a agir no flop; cartas so quando as duas foram lidas
+-- nome: o nick, da mesma fonte que o .txt usa (lotes.nicks_da_mao: digitado, bitmap, OCR ou anonimo estavel)
 CREATE TABLE IF NOT EXISTS jogadores (
   hand_id TEXT NOT NULL REFERENCES hands(id), pos TEXT NOT NULL, seat INTEGER,
-  stack REAL, net REAL, cartas TEXT, hero INTEGER NOT NULL, ordem_flop INTEGER,
+  stack REAL, net REAL, cartas TEXT, hero INTEGER NOT NULL, ordem_flop INTEGER, nome TEXT,
   PRIMARY KEY (hand_id, pos)
 );
 CREATE TABLE IF NOT EXISTS recusas (png TEXT PRIMARY KEY, motivo TEXT NOT NULL, quando TEXT NOT NULL);
@@ -70,13 +73,15 @@ def abrir(banco: Path = RAIZ / "bombpot.db") -> sqlite3.Connection:
     con.executescript(ESQUEMA)
     if "obs" not in [c[1] for c in con.execute("PRAGMA table_info(hands)")]:  # banco anterior a D6
         con.execute("ALTER TABLE hands ADD COLUMN obs TEXT")
+    if "nome" not in [c[1] for c in con.execute("PRAGMA table_info(jogadores)")]:  # banco anterior a aba Jogadores
+        con.execute("ALTER TABLE jogadores ADD COLUMN nome TEXT")
     return con
 
 
 def gravar_linhas(con: sqlite3.Connection, mao: tuple, acoes: list, jogadores: list) -> None:
     con.execute("INSERT INTO hands VALUES (?,?,?,?,?,?,?,?)", mao)
     con.executemany("INSERT INTO acoes VALUES (?,?,?,?,?,?,?,?)", acoes)
-    con.executemany("INSERT INTO jogadores VALUES (?,?,?,?,?,?,?,?)", jogadores)
+    con.executemany("INSERT INTO jogadores VALUES (?,?,?,?,?,?,?,?,?)", jogadores)
 
 
 def so_dinheiro(issue: str) -> bool:
@@ -116,12 +121,13 @@ def linhas(hand, png_nome: str) -> tuple[tuple, list[tuple], list[tuple]]:
                           bb(s.amount), int(s.all_in), bb(pote_antes)))
         pote_antes = s.pot
 
+    nomes = lotes.nicks_da_mao(hand, gravar_trilha=False)  # nunca levanta; sem nick, None
     jogadores = []
     for p in hand.players:
         lidas = len(p.hole) == 2 and all(c.rank and c.suit for c in p.hole)
         jogadores.append((hand.hand_id, p.pos, p.seat, bb(p.start_stack), bb(p.net),
                           " ".join(map(str, p.hole)) if lidas else None,
-                          int(p.seat == 0), ordem_flop.get(p.pos)))
+                          int(p.seat == 0), ordem_flop.get(p.pos), nomes.get(p.pos)))
 
     mao = (hand.hand_id, png_nome, len(hand.players), bb(hand.ante),
            " ".join(map(str, hand.board)), hand.unidade, agora(), obs)
@@ -237,6 +243,36 @@ def refazer(con: sqlite3.Connection, raiz: Path = RAIZ, processos: int = PROCESS
     return contagem
 
 
+SEAT_TXT = re.compile(r"^Seat (\d+): (.+) \([^()]*in chips\)", re.M)
+
+
+def preencher_nomes(con: sqlite3.Connection, raiz: Path = RAIZ) -> dict[str, int]:
+    """O nick das maos lidas antes da coluna `nome`: do .txt da mao (o assento la e o seat + 1); a mao sem .txt
+    (marcada, o export nao grava) rele o print so para os nicks, com a mesma funcao que escreve o .txt."""
+    contagem = {"txt": 0, "print": 0, "sem": 0}
+    faltam = [h for (h,) in con.execute("SELECT DISTINCT hand_id FROM jogadores WHERE nome IS NULL")]
+    for hid in faltam:
+        arq = raiz / "hh" / "maos" / f"{hid}.txt"
+        if arq.is_file():
+            cab = arq.read_text(encoding="utf-8").split("*** HOLE CARDS ***")[0]
+            por_seat = {int(s) - 1: nome for s, nome in SEAT_TXT.findall(cab)}
+            linhas = [(por_seat.get(seat), hid, pos) for pos, seat in
+                      con.execute("SELECT pos, seat FROM jogadores WHERE hand_id = ?", (hid,))]
+            contagem["txt"] += 1
+        else:
+            png = con.execute("SELECT png FROM hands WHERE id = ?", (hid,)).fetchone()[0]
+            arq = raiz / "processadas" / png
+            if not arq.is_file():
+                contagem["sem"] += 1
+                continue
+            nomes = lotes.nicks_da_mao(build(arq, usar_armario=False, gravar=False), gravar_trilha=False)
+            linhas = [(nomes.get(pos), hid, pos) for (pos,) in con.execute("SELECT pos FROM jogadores WHERE hand_id = ?", (hid,))]
+            contagem["print"] += 1
+        with con:
+            con.executemany("UPDATE jogadores SET nome = ? WHERE hand_id = ? AND pos = ?", linhas)
+    return contagem
+
+
 def apagar_mao(con: sqlite3.Connection, hand_id: str) -> None:
     with con:
         for tabela in ("acoes", "jogadores"):
@@ -281,6 +317,8 @@ def main(argv: list[str]) -> int:
         print(processar_pasta(pasta, con))
     elif cmd == "refazer":
         print(refazer(con))
+    elif cmd == "nomes":
+        print(preencher_nomes(con))
     elif cmd == "vigiar":
         try:
             vigiar(float(argv[1]) if len(argv) > 1 else 5, con)

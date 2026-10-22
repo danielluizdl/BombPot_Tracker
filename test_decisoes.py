@@ -166,7 +166,13 @@ def test_resposta_guarda_o_tamanho_para_o_empate(con):
 def test_codigos_das_faixas(con):
     o = servidor.opcoes(con)
     assert o["codigos"]["0,46–0,66"] == "B50" and o["codigos"]["2,00+"] == "B200+"
-    assert len(o["faixas"]) == len(o["codigos"]) == 11 and o["codigos"]["0,01–0,05"] == "B5"
+    assert len(o["faixas"]) == 11 and o["codigos"]["0,01–0,05"] == "B5"
+    # as do H2N (aba MDA) vem a parte, com rotulos que nao se repetem: os codigos somam as duas listas
+    assert len(o["faixas_h2n"]) == 10 and len(o["codigos"]) == 21
+    assert o["codigos"]["0,61–0,80"] == "B70" and o["codigos"]["0,00–0,20"] == "B10" and o["codigos"]["3,50+"] == "B400+"
+    # o filtro escolhe o CASE pela lista do rotulo
+    assert servidor.where({"tam_flop": ["0,41–0,60"]})[0] == f" WHERE {servidor.CASE_H2N.format(col='tam_flop')} IN (?)"
+    assert servidor.where({"tam_flop": ["0,46–0,66"]})[0] == f" WHERE {servidor.CASE_FAIXA.format(col='tam_flop')} IN (?)"
 
 
 def test_tamanho_da_linha_nas_ruas_anteriores():
@@ -176,12 +182,14 @@ def test_tamanho_da_linha_nas_ruas_anteriores():
              ("river", "SB", "Bet", 30.0, 0, 48.0), ("river", "BTN", "Fold", None, 0, 78.0)]
     r = decisoes.linhas_da_mao("x", 2, 20.0, "", acoes, jog, False)
     river_sb = r[4]
-    assert (river_sb[-4], river_sb[-3], river_sb[19]) == (0.1, 0.5, 0.625)  # tam_flop, tam_turn, tamanho agora
-    assert r[2][-4:-2] == (0.1, None)  # no turn so o flop ja aconteceu
-    assert r[1][-4:-2] == (None, None)  # o BTN so pagou
+    C = decisoes.COL
+    assert (river_sb[C["tam_flop"]], river_sb[C["tam_turn"]], river_sb[C["tamanho"]]) == (0.1, 0.5, 0.625)
+    assert (r[2][C["tam_flop"]], r[2][C["tam_turn"]]) == (0.1, None)  # no turn so o flop ja aconteceu
+    assert (r[1][C["tam_flop"]], r[1][C["tam_turn"]]) == (None, None)  # o BTN so pagou
     # e do lado de quem pagou: o BTN pagou 0,10 no flop e 0,50 no turn, e no river enfrenta 0,625
-    assert r[5][3] == "BTN" and r[5][-2:] == (0.1, 0.5) and r[5][12] == 0.625 and r[5][18] == "Fold"
-    assert r[3][-2:] == (0.1, None)  # no turn, o BTN ja tinha pago 0,10 no flop
+    assert r[5][C["pos"]] == "BTN" and (r[5][C["enf_flop"]], r[5][C["enf_turn"]]) == (0.1, 0.5)
+    assert (r[5][C["tamanho_enfrentado"]], r[5][C["acao"]]) == (0.625, "Fold")
+    assert (r[3][C["enf_flop"]], r[3][C["enf_turn"]]) == (0.1, None)  # no turn, o BTN ja tinha pago 0,10 no flop
     w, p = servidor.where({"tam_flop": ["0,06–0,15"], "tam_turn": ["0,46–0,66"]})
     assert w.count("CASE") == 2 and p == ["0,06–0,15", "0,46–0,66"]
 
@@ -212,7 +220,7 @@ def test_allin_por_menos_escrito_como_raise_vira_call():
     utg1, hj, hj_turn = r[1], r[2], r[3]
     assert (utg1[18], utg1[19], utg1[11]) == ("Call", None, "enfrenta aposta")  # acao, tamanho, situacao
     assert (hj[11], hj[12]) == ("enfrenta aposta", 0.25)  # o HJ ainda enfrenta a bet de 16 em 64, nao um "raise"
-    assert hj_turn[-2] == 0.25  # e o tamanho que ele pagou no flop e 0,25, nao negativo
+    assert hj_turn[decisoes.COL["enf_flop"]] == 0.25  # e o tamanho que ele pagou no flop e 0,25, nao negativo
     assert r[0][decisoes.COL_RESPOSTA] == "pago"
 
 
@@ -223,3 +231,42 @@ def test_defesa_por_faixa_do_tamanho_enfrentado(con):
     assert {k: (v["n"], v["Fold"], v["Call"], v["Raise"]) for k, v in d.items()} == {
         "0,34–0,45": (5, 4, 0, 1), "0,46–0,66": (3, 2, 0, 1), "0,06–0,15": (1, 0, 1, 0)}
     assert d["0,46–0,66"]["precisa"] == pytest.approx(3 * 0.5 / 1.5)
+
+
+def test_linha_na_rua_quantos_pagaram_e_o_que_fez_depois_do_raise(con):
+    """Gabarito, flop: 6 checks, CO bet 21,5; BTN/SB/BB/UTG fold; UTG+1 raise 75; MP/HJ fold; CO shove; UTG+1 call."""
+    co_bet, utg1_raise, co_shove, utg1_call = linha(con, 6), linha(con, 11), linha(con, 14), linha(con, 15)
+    assert (co_bet["linha_atual"], co_bet["n_calls"], co_bet["prox_acao"]) == ("", 0, "Raise")  # levou raise e deu shove
+    assert (utg1_raise["linha_atual"], utg1_raise["n_calls"], utg1_raise["prox_acao"]) == ("X", 0, "Call")  # check-raise
+    assert (co_shove["linha_atual"], co_shove["n_calls"], co_shove["prox_acao"]) == ("B", 1, None)  # o shove foi pago
+    assert utg1_call["linha_atual"] == "XR" and linha(con, 7)["linha_atual"] == ""  # o BTN foldou sem ter agido
+
+
+def test_mda_flop_do_gabarito(con):
+    flop = {(n["atual"], n["situ"]): n for n in servidor.mda(con, {"filtros": {}})["flop"]}
+    assert flop[("", "livre")]["acoes"] == {"Check": 6, "Bet": 1}          # 6 checks e a bet do CO
+    assert flop[("", "enfrenta")]["acoes"] == {"Fold": 1}                  # o BTN, que ainda nao tinha agido
+    assert flop[("X", "enfrenta")]["acoes"] == {"Fold": 5, "Raise": 1}     # checou e enfrenta: 5 folds e o check-raise
+    assert flop[("B", "enfrenta")]["acoes"] == {"Raise": 1}                # o CO apostou, levou raise e deu shove
+    assert flop[("XR", "enfrenta")]["acoes"] == {"Call": 1}                # o UTG+1 paga o shove
+    bet = flop[("", "livre")]["tamanhos"]["Bet"]["0,21–0,40"]            # CO 21,5 em 64 = 0,336: B30 do H2N
+    assert (bet["n"], bet["aumentado"], bet["depois"]["Raise"]) == (1, 1, 1)
+    # levou raise: o blefe perdeu a bet (EV -0,336 pote); precisa foldar = 0,336 / 1,336
+    assert (bet["respondidas"], bet["ev"], bet["tam"]) == (1, pytest.approx(-0.336), pytest.approx(0.336))
+    shove = flop[("B", "enfrenta")]["tamanhos"]["Raise"]["0,00–0,20|AI"]  # aumento 0,101, all-in, pago por 1
+    assert (shove["n"], shove["1 call"]) == (1, 1)
+    # checaram e enfrentam: SB, BB, UTG foldam e UTG+1 da raise contra 0,336; MP e HJ foldam contra o raise de 0,5
+    enf = flop[("X", "enfrenta")]["enfrentado"]
+    assert enf == {"0,21–0,40": {"Fold": 3, "Raise": 1, "precisa": pytest.approx(4 * 0.336 / 1.336)},
+                   "0,41–0,60": {"Fold": 2, "precisa": pytest.approx(2 * 0.5 / 1.5)}}
+    # so o BTN: as acoes dele no flop
+    btn = servidor.mda(con, {"filtros": {"pos": ["BTN"]}})["flop"]
+    assert [(n["atual"], n["situ"], n["acoes"]) for n in btn] == [("", "enfrenta", {"Fold": 1})]
+
+
+def test_mda_caminho_vira_filtro():
+    c = {"flop": {"linha": "B", "faixa": "0,46–0,66", "lado": "aposta"}, "turn": {"linha": "XC", "faixa": "0,67–0,85", "lado": "pagou"}}
+    assert servidor._caminho(c, "flop") == {}
+    assert servidor._caminho(c, "turn") == {"linha_flop": ["B"], "tam_flop": ["0,46–0,66"]}
+    assert servidor._caminho(c, "river") == {"linha_flop": ["B"], "tam_flop": ["0,46–0,66"],
+                                             "linha_turn": ["XC"], "enf_turn": ["0,67–0,85"]}

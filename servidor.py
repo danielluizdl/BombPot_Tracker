@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import decisoes
+import resultados
 import tracker
 
 RAIZ = Path(__file__).resolve().parent
@@ -31,8 +32,20 @@ FAIXAS = [(0.05, "0,01–0,05", "B5"), (0.15, "0,06–0,15", "B10"), (0.33, "0,1
           (1.20, "1,01–1,20", "B110"), (1.50, "1,21–1,50", "B135"), (2.00, "1,51–2,00", "B175"),
           (None, "2,00+", "B200+")]
 # Tamanho vazio (nao apostou / nao pagou) fica sem faixa: sem o primeiro WHEN ele caia no ELSE e virava "2,00+".
-CASE_FAIXA = "CASE WHEN {col} IS NULL THEN NULL " + " ".join(f"WHEN {{col}} <= {teto} THEN '{nome}'" for teto, nome, _ in FAIXAS if teto) \
-    + f" ELSE '{FAIXAS[-1][1]}' END"
+def _case(faixas) -> str:
+    return "CASE WHEN {col} IS NULL THEN NULL " + " ".join(f"WHEN {{col}} <= {teto} THEN '{nome}'" for teto, nome, _ in faixas if teto) \
+        + f" ELSE '{faixas[-1][1]}' END"
+
+
+CASE_FAIXA = _case(FAIXAS)
+# As faixas da aba Bet Sizes do H2N (docs/H2N_TELAS.md do MetaLens), usadas na aba MDA. Os rotulos nao se repetem
+# com os de FAIXAS: e pelo rotulo que o filtro sabe qual das duas listas usar.
+FAIXAS_H2N = [(0.20, "0,00–0,20", "B10"), (0.40, "0,21–0,40", "B30"), (0.60, "0,41–0,60", "B50"),
+              (0.80, "0,61–0,80", "B70"), (1.05, "0,81–1,05", "B100"), (1.30, "1,06–1,30", "B120"),
+              (1.70, "1,31–1,70", "B150"), (2.40, "1,71–2,40", "B210"), (3.50, "2,41–3,50", "B280"),
+              (None, "3,50+", "B400+")]
+CASE_H2N = _case(FAIXAS_H2N)
+NOMES_H2N = {nome for _, nome, _ in FAIXAS_H2N}
 EV_BLEFE = "CASE WHEN resposta = 'todos foldam' THEN 1.0 ELSE -tamanho END"
 
 # coluna -> tipo do filtro. 'lista' = IN (...), 'faixa' = min/max (ou lista de valores), 'faixas' = faixas
@@ -82,7 +95,8 @@ def where(filtros: dict) -> tuple[str, list]:
                 partes.append(f"{col} <= ?")
                 params.append(float(valor["max"]))
         elif tipo == "faixas" and isinstance(valor, list) and valor:
-            partes.append(f"{CASE_FAIXA.format(col=col)} IN ({','.join('?' * len(valor))})")
+            case = CASE_H2N if set(valor) <= NOMES_H2N else CASE_FAIXA
+            partes.append(f"{case.format(col=col)} IN ({','.join('?' * len(valor))})")
             params += valor
         elif tipo == "tags" and isinstance(valor, list) and valor:
             partes.append("(" + " OR ".join(f"instr({col}, ?) > 0" for _ in valor) + ")")
@@ -310,6 +324,85 @@ def painel(con: sqlite3.Connection, filtros: dict) -> list[dict]:
     return saida
 
 
+# --- MDA: a arvore de acoes por rua (o perfil do H2N), com bet sizes em cada no --------------------------------
+# Filtros que a propria arvore controla: nao valem como filtro de fora na aba MDA.
+DA_ARVORE = {"rua", "situacao", "ip", "linha_flop", "linha_turn", "tam_flop", "tam_turn", "enf_flop", "enf_turn",
+             "acao", "tamanho", "tamanho_enfrentado", "decisao_n", "checou_antes", "resposta", "_agrupar"}
+SITU = "CASE WHEN situacao = 'livre' THEN 'livre' ELSE 'enfrenta' END"
+
+
+def _caminho(caminho: dict, ate: str) -> dict:
+    """O afunilamento como filtros: na rua `ate`, so quem fez a linha escolhida nas ruas anteriores.
+
+    caminho[rua] = {"linha": "B", "faixa": "0,46–0,66", "lado": "aposta"|"pagou"}: a linha dele naquela rua
+    (as letras, ex. "B" = apostou e ninguem aumentou; "XC" = check-call) e, se veio de um tamanho, a faixa da bet
+    dele (lado aposta) ou da bet que ele pagou (lado pagou)."""
+    filtros: dict = {}
+    for rua in {"flop": [], "turn": ["flop"], "river": ["flop", "turn"]}[ate]:  # so as ruas antes de `ate`
+        passo = caminho.get(rua) if isinstance(caminho, dict) else None
+        if not isinstance(passo, dict) or not passo.get("linha"):
+            continue
+        filtros[f"linha_{rua}"] = [str(passo["linha"])]
+        if passo.get("faixa"):
+            filtros[("enf_" if passo.get("lado") == "pagou" else "tam_") + rua] = [str(passo["faixa"])]
+    return filtros
+
+
+def mda(con: sqlite3.Connection, corpo: dict) -> dict:
+    """Por rua, os nos da arvore e, em cada no, as acoes; Bet/Raise abertos por tamanho (com all-in a parte) e,
+    para quem enfrenta, as acoes por tamanho enfrentado."""
+    externos = {k: v for k, v in (corpo.get("filtros") or {}).items() if k not in DA_ARVORE}
+    caminho = corpo.get("caminho") or {}
+    saida: dict = {}
+    for rua in ("flop", "turn", "river"):
+        w, p = where({**externos, **_caminho(caminho, rua), "rua": [rua]})
+        nos: dict[str, dict] = {}
+
+        def no(lf, lt, atual, situ) -> dict:
+            prefixo = [x for x in ((lf,) if rua == "turn" else (lf, lt) if rua == "river" else ()) if x is not None]
+            chave = "|".join(prefixo) + "#" + atual + "#" + situ
+            return nos.setdefault(chave, {"chave": chave, "prefixo": prefixo, "atual": atual, "situ": situ, "n": 0,
+                                          "acoes": {}, "tamanhos": {}, "enfrentado": {}})
+
+        for lf, lt, atual, situ, acao, n in con.execute(
+                f"SELECT linha_flop, linha_turn, linha_atual, {SITU}, acao, count(*) FROM decisoes{w} GROUP BY 1, 2, 3, 4, 5", p):
+            d = no(lf, lt, atual, situ)
+            d["n"] += n
+            d["acoes"][acao] = n
+        for lf, lt, atual, situ, acao, faixa, allin, n, folds, c1, c2, c3, aum, pf, pc, pr, resp, ev, tam in con.execute(
+                f"SELECT linha_flop, linha_turn, linha_atual, {SITU}, acao, {CASE_H2N.format(col='tamanho')}, allin, "
+                # CASE e nao sum(x = y): com tudo NULL (ninguem levou raise) o sum devolve NULL em vez de 0
+                "count(*), " + ", ".join(f"sum(CASE WHEN {cond} THEN 1 ELSE 0 END)" for cond in (
+                    "resposta = 'todos foldam'", "resposta = 'pago' AND n_calls = 1", "resposta = 'pago' AND n_calls = 2",
+                    "resposta = 'pago' AND n_calls >= 3", "resposta = 'aumentado'",
+                    "prox_acao = 'Fold'", "prox_acao = 'Call'", "prox_acao = 'Raise'", "resposta IS NOT NULL")) + ", "
+                # EV do blefe e bet media como na Resposta ao sizing do Estudo: so as bets que a mesa respondeu
+                f"sum(CASE WHEN resposta IS NOT NULL THEN {EV_BLEFE} ELSE 0 END), "
+                "sum(CASE WHEN resposta IS NOT NULL THEN tamanho ELSE 0 END) "
+                f"FROM decisoes{w}{_e(w)}acao IN ('Bet', 'Raise') AND tamanho IS NOT NULL GROUP BY 1, 2, 3, 4, 5, 6, 7", p):
+            chave = faixa + ("|AI" if allin else "")
+            no(lf, lt, atual, situ)["tamanhos"].setdefault(acao, {})[chave] = {
+                "n": n, "todos foldam": folds, "1 call": c1, "2 calls": c2, "3+ calls": c3, "aumentado": aum,
+                "depois": {"Fold": pf, "Call": pc, "Raise": pr}, "respondidas": resp, "ev": ev, "tam": tam}
+        for lf, lt, atual, situ, faixa, acao, n, precisa in con.execute(
+                f"SELECT linha_flop, linha_turn, linha_atual, {SITU}, {CASE_H2N.format(col='tamanho_enfrentado')}, acao, "
+                f"count(*), sum(tamanho_enfrentado / (1 + tamanho_enfrentado)) FROM decisoes{w}{_e(w)}situacao != 'livre' "
+                "AND tamanho_enfrentado IS NOT NULL GROUP BY 1, 2, 3, 4, 5, 6", p):
+            d = no(lf, lt, atual, situ)["enfrentado"].setdefault(faixa, {"precisa": 0.0})
+            d[acao] = n
+            d["precisa"] += precisa  # soma de bet/(1+bet) mao a mao: dividido pelo n, o fold que empata um blefe
+        saida[rua] = sorted(nos.values(), key=lambda d: (-sum(x["n"] for x in nos.values() if x["prefixo"] == d["prefixo"]),
+                                                          d["prefixo"], len(d["atual"]), d["situ"] != "livre", d["atual"]))
+    return saida
+
+
+def jogadores(con: sqlite3.Connection, _corpo: dict) -> dict:
+    """A lista da aba Jogadores e o que ficou fora do grafico (sem nick; saldo que nao confere com o poker)."""
+    if not resultados.FORA:
+        resultados.reconstruir(con)
+    return {"jogadores": resultados.jogadores(con), "fora": resultados.FORA}
+
+
 def exportar(con: sqlite3.Connection, filtros: dict, raiz: Path = RAIZ) -> tuple[str, int]:
     """Os .txt (PokerStars, bomb pot no formato do GG) das maos do filtro, num texto so, para o H2N."""
     w, p = where(filtros)
@@ -329,7 +422,8 @@ def opcoes(con: sqlite3.Connection) -> dict:
                    for tag in txt.strip("|").split("|") if tag})
     datas = con.execute("SELECT min(data), max(data) FROM decisoes").fetchone()
     return {"lista": lista, "faixa": faixa, "faixas": [nome for _, nome, _ in FAIXAS],
-            "codigos": {nome: cod for _, nome, cod in FAIXAS}, "tags": tags, "datas": datas,
+            "codigos": {nome: cod for _, nome, cod in FAIXAS + FAIXAS_H2N}, "tags": tags, "datas": datas,
+            "faixas_h2n": [nome for _, nome, _ in FAIXAS_H2N],
             "forcas": decisoes.FORCAS, "draws": decisoes.DRAWS, "maos": n_maos}
 
 
@@ -342,6 +436,7 @@ class Handler(SimpleHTTPRequestHandler):
         n = self.con.execute("SELECT count(*) FROM hands").fetchone()[0]
         if n != Handler.maos_vistas:
             decisoes.reconstruir(self.con)
+            resultados.reconstruir(self.con)
             Handler.maos_vistas = n
 
     def __init__(self, *a, **kw):
@@ -390,7 +485,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(corpo)
             return None
-        rotas = {"/api/consulta": consultar, "/api/painel": painel}
+        rotas = {"/api/consulta": consultar, "/api/painel": painel, "/api/mda": mda,
+                 "/api/jogadores": jogadores, "/api/serie": lambda con, corpo: resultados.serie(con, str(corpo.get("nome", "")))}
         if self.path not in rotas:
             return self._json({"erro": "rota desconhecida"}, 404)
         try:

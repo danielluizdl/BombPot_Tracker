@@ -9,6 +9,7 @@ rodar de novo da o mesmo resultado, entao nada aqui e fonte de verdade.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from collections import defaultdict
@@ -67,6 +68,10 @@ CREATE TABLE decisoes (
   tam_turn REAL,                -- idem no turn, em decisoes do river
   enf_flop REAL,                -- tamanho da bet/raise que ELE PAGOU no flop (a ultima que pagou), em decisoes do turn/river
   enf_turn REAL,                -- idem no turn, em decisoes do river
+  linha_atual TEXT NOT NULL,    -- o que ELE ja fez nesta rua antes desta decisao ('' = primeira vez; 'B' = apostou e
+                                -- agora enfrenta raise -> forma BF/BC/BR; 'X' = checou e agora enfrenta bet -> XF/XC/XR)
+  n_calls INTEGER,              -- so em Bet/Raise: quantos pagaram antes da proxima agressao
+  prox_acao TEXT,               -- so em Bet/Raise que levou raise: o que ele fez depois (Fold, Call, Raise)
   PRIMARY KEY (hand_id, ordem)
 );
 CREATE INDEX decisoes_rua_sit ON decisoes (rua, situacao);
@@ -100,7 +105,10 @@ def forcas_por_rua(hole: list, board: list) -> dict[str, tuple]:
 
 # HAND ID do WPT: os bits acima do 22 sao milissegundos desde esta origem (conferido em 5 prints, erro <= 1 s)
 ORIGEM_ID = datetime(2016, 9, 25, 8, 28, 7, 268000)
-COL_RESPOSTA = 31  # posicao de `resposta` na linha (conferida em test_decisoes)
+_CORPO = re.sub(r"--.*", "", ESQUEMA.split("CREATE TABLE decisoes (")[1].split("PRIMARY KEY")[0])
+COLUNAS = re.findall(r"(\w+) (?:TEXT|INTEGER|REAL)", _CORPO)
+COL = {nome: i for i, nome in enumerate(COLUNAS)}  # nome da coluna -> posicao na linha de linhas_da_mao
+COL_RESPOSTA = COL["resposta"]
 LETRA = {"Check": "X", "Bet": "B", "Call": "C", "Raise": "R", "Fold": "F"}
 
 
@@ -171,6 +179,8 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
     tamanhos: dict[str, dict[str, float]] = {r: {} for r in RUAS}  # rua -> jogador -> tamanho da agressao dele
     pagou: dict[str, dict[str, float]] = {r: {} for r in RUAS}  # rua -> jogador -> tamanho da bet que ele pagou
     tam_antes: list[tuple] = []  # por linha: (tam_flop, tam_turn, enf_flop, enf_turn) do jogador ate a rua da decisao
+    atual_antes: list[str] = []  # por linha: as letras dele nesta rua antes da decisao
+    resposta_extra: dict[int, tuple] = {}  # linha de bet/raise -> (n_calls, prox_acao)
     tags = ["|".join(tags_rua(todas, 1)), "|".join(tags_rua(todas, 1) + tags_rua(todas, 2))]
     agressor_anterior = None
     rua_anterior_checada = None
@@ -191,7 +201,7 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
         checou: set[str] = set()
         vezes: dict[str, int] = defaultdict(int)
         n_vivos = len(vivos)
-        da_rua: list[tuple[int, str]] = []  # (linha, verbo) desta rua, para a resposta
+        da_rua: list[tuple[int, str, str]] = []  # (linha, verbo, jogador) desta rua, para a resposta
         for _, p, verbo, valor, allin, pote in acts:
             j = jog.get(p)
             if j is None or verbo not in ACOES:  # Insurance/Show Card nao sao decisao de poker
@@ -214,7 +224,8 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
             elif verbo == "Raise" and pote:
                 pagar = maior - investido[p]
                 tamanho = round(((valor or 0) - maior) / (pote + pagar), 3)
-            da_rua.append((len(saida), verbo))
+            da_rua.append((len(saida), verbo, p))
+            atual_antes.append(letras[rua].get(p, ""))
             gasto_antes.append(investido_mao[p] + investido[p])
             saida.append([
                 hid, rua, len(saida), p,
@@ -251,31 +262,38 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
                 maior, ultima_agressao, agressor = investido[p], tamanho, p
                 raises += 1
             elif verbo == "Call":
-                # no call normal o valor e o complemento; no all-in por menos ("Raise" do WPT) e o total na rua
-                investido[p] = max(investido[p], valor or 0) if por_menos else investido[p] + (valor or 0)
+                # no call normal o valor e o complemento; no call all-in (e no all-in por menos, o "Raise" do WPT)
+                # e o total dele na rua: conferido pelo saldo em todas as maos que decidem (ID_1312645872378032128)
+                investido[p] = max(investido[p], valor or 0) if por_menos or allin else investido[p] + (valor or 0)
             elif verbo == "Check":
                 checou.add(p)
             elif verbo == "Fold":
                 vivos.discard(p)
             ultima_acao[p] = verbo
-        for k, (linha, verbo) in enumerate(da_rua):
+        for k, (linha, verbo, quem) in enumerate(da_rua):
             if verbo in ("Bet", "Raise"):
-                depois = [v for _, v in da_rua[k + 1:]]
+                seguintes = da_rua[k + 1:]
+                depois = [v for _, v, _ in seguintes]
                 ate = next((i for i, v in enumerate(depois) if v in ("Bet", "Raise")), len(depois))
                 resto = depois[:ate + 1] if ate < len(depois) else depois
                 saida[linha][COL_RESPOSTA] = ("aumentado" if "Raise" in resto else "pago" if "Call" in resto
                                     else "todos foldam" if resto else None)
+                # depois de levar raise, a proxima acao DELE nesta rua (BF/BC/BR)
+                prox = next((v for _, v, q in seguintes[ate + 1:] if q == quem), None) if ate < len(depois) else None
+                resposta_extra[linha] = (resto.count("Call"), prox)
         for p, v in investido.items():
             investido_mao[p] += v
         agressor_anterior = agressor if agressor in vivos else None
         rua_anterior_checada = int(maior == 0)
     showdown = len(vivos) >= 2
-    for linha, gasto, antes in zip(saida, gasto_antes, tam_antes):
+    for i, (linha, gasto, antes) in enumerate(zip(saida, gasto_antes, tam_antes)):
         net = jog[linha[3]].get("net")
         linha.append(None if marcada or net is None else round(net + gasto, 2))
         linha.append(int(showdown and linha[3] in vivos))
         linha.append(None if net is None else int(net > 0))
         linha.extend(antes)
+        linha.append(atual_antes[i])
+        linha.extend(resposta_extra.get(i, (None, None)))
     return [tuple(linha) for linha in saida]
 
 
