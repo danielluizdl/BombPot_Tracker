@@ -16,3 +16,4 @@ __pycache__/
 .playwright-mcp/
 conferencias_bombpot.json
 pareceres_nicks.json
+nicks_pendentes/

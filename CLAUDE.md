@@ -13,6 +13,7 @@ tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar 
                refazer NUNCA mexe no banco: rele processadas/+recusadas/ para bombpot_novo.db (+hh_novo/) e escreve
                refazer_<versao>.txt com o diff; aceitar audita, copia o banco (bombpot_antes_aceitar.db), troca as 4
                tabelas da leitura numa transacao, move os prints que mudaram de pasta e grava REPLAYER_OK.
+nicks.py       fiscalizacao dos nicks: grupos, grafia real, ensino do caderno do Replayer (ver abaixo)
 auditar.py     invariantes de todas as maos (acao ilegal, cartas repetidas, saldo x cartas, fold = -8 BB, print
                ausente, leitor nao aceito...); informativas: cartas duvidosas, hora estranha, excluidas
 decisoes.py    tabela derivada `decisoes`: uma linha por decisao pos-flop, com contexto, forca,
@@ -33,6 +34,22 @@ Dado humano (o refazer nao recria; vai para `conferencias_bombpot.json` em `BOMB
 `conferencias` (o que a leitura dizia quando o dono conferiu: mao conferida que muda trava o aceitar) e `aliases`.
 
 Upgrade do Replayer: `python tracker.py refazer` -> ler o refazer_*.txt -> `python tracker.py aceitar`.
+
+## Fiscalização dos nicks (responsabilidade do Claude, delegada pelo dono em 23/out)
+
+`nicks.py`: grupos de nicks (tabela `aliases`, m -> grafia real), grafias conferidas no print (`nicks_conferidos`) e o
+ensino do caderno do Replayer (`dados_wpt/jogadores.json`, via `wptparse.jogadores.Caderno`, sem mexer no código de
+lá): nick confirmado com o desenho vence bitmap e OCR quando o desenho fica a <= 0,10.
+
+**Em toda sessão neste projeto**, antes do resto:
+1. `python tracker.py nicks` -> pares pendentes e uma imagem por par em `nicks_pendentes/` (topo da mesa de cada lado).
+2. Olhar cada imagem (Read). Mesmo nick na tela/mesmo avatar/mesma sessão = mesmo; grafias ou avatares diferentes,
+   ou duas contas no mesmo minuto em mesas diferentes = diferente. Nome cortado na mesa: ler a coluna de resultado
+   do histórico em resolução cheia.
+3. Decidir e aplicar (`nicks.definir_real`; "não é" = linha em `aliases` com junta 0). Só marcar `conferido=True`
+   quando a grafia real for afirmável no print (traço ambíguo como 丿/ノ, 丶/、, l/I, vv/w: junta sem ensinar).
+   Na dúvida, escrever o parecer em `pareceres_nicks.json` e deixar o par para o dono na aba Conferir.
+4. `python tracker.py ensinar` e conferir que toda correção ficou dentro do grupo. Contar ao dono o que mudou.
 
 Quirks do WPT:
 - aposta all-in sem aposta antes vem escrita como "Raise"; `decisoes` e a linha da mao normalizam para Bet;

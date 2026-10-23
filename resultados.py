@@ -368,6 +368,7 @@ def sugestoes_alias(con: sqlite3.Connection, limite: int = 60) -> list[dict]:
         decididos = {frozenset(par) for par in con.execute("SELECT a, b FROM aliases")}
     except sqlite3.OperationalError:
         decididos = set()
+    grupo = principais(con)  # dois nicks que ja apontam para o mesmo jogador tambem estao decididos
     nomes = sorted((n for n in maos if len(n) >= 3 and not n.lower().startswith("player")), key=len)
     por_tam: dict[int, list[str]] = defaultdict(list)
     for n in nomes:
@@ -376,7 +377,8 @@ def sugestoes_alias(con: sqlite3.Connection, limite: int = 60) -> list[dict]:
     for a in nomes:
         for b in por_tam[len(a)] + por_tam[len(a) + 1]:
             if a < b or len(b) > len(a):
-                if lev1(a, b) and not (maos[a] & maos[b]) and frozenset((a, b)) not in decididos:
+                if lev1(a, b) and not (maos[a] & maos[b]) and frozenset((a, b)) not in decididos \
+                        and grupo.get(a, a) != grupo.get(b, b):
                     menor, maior = sorted((a, b), key=lambda x: len(maos[x]))
                     saida.append({"a": menor, "b": maior, "maos_a": len(maos[menor]), "maos_b": len(maos[maior])})
     saida.sort(key=lambda s: -(s["maos_a"] + s["maos_b"]))

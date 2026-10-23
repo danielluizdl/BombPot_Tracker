@@ -6,6 +6,8 @@
     python tracker.py aceitar             audita o bombpot_novo.db e, se limpo, troca as maos do banco por ele
     python tracker.py auditar             confere as invariantes de todas as maos (auditar.py)
     python tracker.py nomes               preenche o nick das maos lidas antes da coluna `nome` existir
+    python tracker.py nicks               pares de nicks que podem ser o mesmo jogador, com imagens (nicks.py)
+    python tracker.py ensinar             ensina ao caderno do Replayer a grafia conferida dos nicks (nicks.py)
 
 Le em BOMBPOT_PROCESSOS processos (padrao 3); so o processo principal grava.
 
@@ -84,6 +86,8 @@ CREATE TABLE IF NOT EXISTS conferencias (
 );
 -- tambem dado humano: dois nicks que o dono confirmou serem (junta = 1) ou nao (0) o mesmo jogador; a -> b
 CREATE TABLE IF NOT EXISTS aliases (a TEXT NOT NULL, b TEXT NOT NULL, junta INTEGER NOT NULL, PRIMARY KEY (a, b));
+-- grafia de nick conferida no print (nicks.py): so estas ensinam o caderno do Replayer
+CREATE TABLE IF NOT EXISTS nicks_conferidos (nick TEXT PRIMARY KEY, fonte TEXT, quando TEXT NOT NULL);
 """
 # colunas que bancos antigos nao tem (o CREATE TABLE IF NOT EXISTS nao as acrescenta)
 COLUNAS_NOVAS = {"hands": ("obs TEXT", "versao_leitor TEXT", "sha256 TEXT", "mtime TEXT", "pior_rank REAL"),
@@ -390,6 +394,12 @@ def diferencas(antes: dict, depois: dict) -> list[str]:
     return saida
 
 
+def _nicks_do_grupo(assin: dict, real_de: dict[str, str]) -> dict:
+    """A assinatura com cada nick trocado pela grafia real do grupo (aliases confirmados): corrigir o nick de uma mao
+    conferida (nicks.py) nao e a leitura piorar, e nao pode travar o aceitar."""
+    return {**assin, "jogadores": [r[:7] + [real_de.get(r[7], r[7])] for r in assin["jogadores"]]}
+
+
 def comparar(con: sqlite3.Connection, novo: sqlite3.Connection) -> tuple[dict[str, int], list[str]]:
     """Banco atual x banco do refazer, mao a mao. Alertas primeiro: mao conferida que mudou, print cujo HAND ID
     mudou (era o caso em que o refazer antigo deixava duas maos para um print)."""
@@ -398,6 +408,8 @@ def comparar(con: sqlite3.Connection, novo: sqlite3.Connection) -> tuple[dict[st
     novo_rec = dict(novo.execute("SELECT png, motivo FROM recusas"))
     velho_ids, novo_ids = set(velho_png.values()), set(novo_png.values())
     conferidas = dict(con.execute("SELECT hand_id, assinatura FROM conferencias WHERE ok = 1"))
+    import resultados  # aqui: resultados importa decisoes, que importa tracker
+    real_de = resultados.principais(con)
     contagem: dict[str, int] = dict.fromkeys(("igual", "mudou", "nova", "saiu", "id_mudou", "conferida_mudou"), 0)
     alertas, linhas_ = [], []
     for png, hid in sorted(velho_png.items()):
@@ -424,7 +436,8 @@ def comparar(con: sqlite3.Connection, novo: sqlite3.Connection) -> tuple[dict[st
         else:
             contagem["mudou"] += 1
             linhas_.append(f"mudou  {hid}: " + "; ".join(diferencas(antes, depois)))
-        if hid in conferidas and json.dumps(json.loads(conferidas[hid])) != json.dumps(depois):
+        if hid in conferidas and json.dumps(_nicks_do_grupo(json.loads(conferidas[hid]), real_de)) \
+                != json.dumps(_nicks_do_grupo(depois, real_de)):
             contagem["conferida_mudou"] += 1
             alertas.append(f"ALERTA conferida mudou  {hid}: "
                            + "; ".join(diferencas(json.loads(conferidas[hid]), depois)))
@@ -549,6 +562,15 @@ def main(argv: list[str]) -> int:
     elif cmd == "auditar":
         import auditar
         return auditar.imprimir(auditar.auditar(con))
+    elif cmd == "nicks":
+        import nicks
+        pares = nicks.pendentes(con)
+        print(f"{len(pares)} pares de nicks pendentes; imagens em nicks_pendentes/")
+        for s in pares:
+            print(f"  {s['i']:02d}  {s['a']} ({s['maos_a']}) -> {s['b']} ({s['maos_b']})")
+    elif cmd == "ensinar":
+        import nicks
+        print(nicks.ensinar(con))
     elif cmd == "nomes":
         print(preencher_nomes(con))
     elif cmd == "vigiar":

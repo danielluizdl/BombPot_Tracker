@@ -31,7 +31,11 @@ Backup das conferências: Google Drive do dono, pasta privada "BombPot Tracker -
 sincronizado, então a cópia automática (`conferencias_bombpot.json`) fica ao lado do banco: depois de conferir
 mais mãos, subir um CSV novo para essa pasta (ou instalar o Google Drive para desktop e apontar `BOMBPOT_COPIA`).
 
-Pendente do dono: juntar os nicks sugeridos na aba Jogadores.
+Nicks (23/out): o dono bateu 52/52 pareceres do Claude e delegou a fiscalização (rotina no CLAUDE.md). 36 grupos
+com grafia real; 31 conferidas ensinaram o caderno do Replayer (dados_wpt/jogadores.json, 31 nicks) e corrigiram 91
+assentos, todos dentro do grupo. Sem ensinar: 5 grupos com traço ambíguo (丶/、, 丿/ノ, l/I, vv/w, nome cortado).
+Próximo passo possível: o mesmo tipo de erro (I/1, l/I, 0/o) em jogador NOVO só some ensinando o dicionário de
+caracteres do Replayer -- isso é código/dados de lá: perguntar ao dono antes.
 
 ## O projeto em uma frase
 
