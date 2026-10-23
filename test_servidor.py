@@ -147,6 +147,23 @@ def test_sugestoes_de_nick_partido(con):
     assert not any({s["a"], s["b"]} == par for s in resultados.sugestoes_alias(con))  # o dono ja disse que nao
 
 
+def test_conferir_nicks_mostra_o_par_com_parecer_e_avanca(con, tmp_path):
+    con.execute("UPDATE jogadores SET nome = 'zzTesteA' WHERE hand_id = '1311804268404871168' AND pos = 'BB'")
+    con.execute("UPDATE jogadores SET nome = 'zzTesteB' WHERE hand_id <> '1311804268404871168' AND pos = 'BB'")
+    con.commit()
+    (tmp_path / "r" / "pareceres_nicks.json").write_text(
+        json.dumps({"zzTesteA|zzTesteB": {"veredito": "mesmo", "motivo": "o print diz zzTesteB nos dois"}}), encoding="utf-8")
+    r = servidor.conferir(con, {"modo": "nicks"})
+    par = r["nick"]
+    assert {par["a"], par["b"]} == {"zzTesteA", "zzTesteB"} and r["restantes"] >= 1
+    assert par["maos"]["a"][0]["png"] in ("a.png", "b.png") and par["maos"]["a"][0]["pos"] == "BB"
+    if (par["a"], par["b"]) == ("zzTesteA", "zzTesteB"):
+        assert par["parecer"]["veredito"] == "mesmo"
+    r2 = servidor.juntar(con, {"a": par["a"], "b": par["b"], "junta": True, "modo": "nicks"})
+    assert r2["modo"] == "nicks" and r2["restantes"] == r["restantes"] - 1  # devolve o proximo par
+    assert con.execute("SELECT junta FROM aliases WHERE a = ? AND b = ?", (par["a"], par["b"])).fetchone() == (1,)
+
+
 def test_principais_seguem_a_cadeia(con):
     con.executemany("INSERT INTO aliases VALUES (?,?,1)", [("a", "b"), ("b", "c"), ("x", "y")])
     con.execute("INSERT INTO aliases VALUES ('y', 'x', 1)")  # ciclo nao trava

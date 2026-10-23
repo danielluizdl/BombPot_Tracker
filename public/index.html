@@ -288,6 +288,8 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 .conf-acoes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .conf-acoes select, .conf-acoes input { min-height: 34px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .btn.erro { border-color: var(--ruim); color: var(--ruim); }
+.nicks-prints { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 900px) { .nicks-prints { grid-template-columns: 1fr; } }
 
 /* --- hero x população, sugestões de nick --- */
 .leaks td.z { color: var(--muted); }

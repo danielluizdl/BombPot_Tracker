@@ -1138,13 +1138,15 @@ const textoCartas = cs => (cs ?? '').split(' ').filter(Boolean).map(c => c.repla
 function desenharConferir() {
   const r = confDados, s = r.saude, m = r.mao;
   const segModo = el('div', { className: 'seg', role: 'group', 'aria-label': 'Modo' }, [
-    ['sorteio', 'Sorteio (mede a taxa)'], ['suspeita', `Suspeitas (${s.suspeitas.length})`]].map(([v, t]) => el('button', {
+    ['sorteio', 'Sorteio (mede a taxa)'], ['suspeita', `Suspeitas (${s.suspeitas.length})`],
+    ['nicks', confModo === 'nicks' ? `Nicks repetidos (${r.restantes})` : 'Nicks repetidos']].map(([v, t]) => el('button', {
     type: 'button', textContent: t, ariaPressed: String(confModo === v), onclick: () => { confModo = v; consultar(); } })));
   const placar = el('span', { className: 'placar' }, s.conferidas
     ? [el('b', { textContent: `${s.conferidas}` }), ` sorteadas conferidas · `, el('b', { textContent: `${s.erros}` }), ` com erro · taxa de erro ≤ `,
       el('b', { textContent: pctTeto(s.teto) }), ' (95%)' + (s.conferidas_total > s.conferidas ? ` · mais ${s.conferidas_total - s.conferidas} da fila de suspeitas` : '')]
     : ['Nenhuma mão sorteada conferida ainda. 100 sem erro dizem "erro < 3%"; 300, "< 1%".']);
   const topo = el('section', { className: 'card conf-topo', style: 'padding:12px 16px' }, [segModo, placar]);
+  if (confModo === 'nicks') { $('conferir').replaceChildren(topo, ...conferirNick(r)); return; }
   if (!m) {
     $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota', textContent:
       confModo === 'suspeita' ? 'Nenhuma carta duvidosa esperando conferência.' : 'Todas as mãos já foram conferidas.' })]));
@@ -1187,6 +1189,42 @@ function desenharConferir() {
   $('conferir').replaceChildren(topo, el('div', { className: 'conf-grade' }, [
     el('section', { className: 'card conf-print' }, [el('img', { src: `/print/${encodeURIComponent(m.png)}`, alt: `Print da mão ${m.hand_id}` })]),
     corpo]));
+}
+
+// Nicks repetidos: dois nicks a um caractere de distância que nunca sentaram juntos. Mostra um print de cada (o
+// nick está na posição indicada), o parecer do Claude (que olhou os prints antes) e deixa o dono decidir.
+const PARECER = { mesmo: ['bom', 'Mesmo jogador'], diferente: ['ruim', 'Jogadores diferentes'], duvida: ['neutro', 'Na dúvida'] };
+
+async function decidirNick(par, junta) {
+  document.body.classList.add('carregando');
+  const meu = ++pedido;
+  const r = await (await fetch('/api/juntar', { method: 'POST',
+    body: JSON.stringify({ a: par.a, b: par.b, junta, modo: 'nicks' }) })).json();
+  if (meu !== pedido) return;
+  document.body.classList.remove('carregando');
+  if (r.erro) { $('conferir').prepend(el('p', { className: 'nota ruim', textContent: 'Erro: ' + r.erro })); return; }
+  listaJogadores = null;  // a aba Jogadores relê com o nick junto
+  confDados = r;
+  desenharConferir();
+}
+
+function conferirNick(r) {
+  const par = r.nick;
+  if (!par) return [el('section', { className: 'card' }, [el('p', { className: 'nota', textContent: 'Nenhum par de nicks esperando decisão.' })])];
+  const [cls, rot] = PARECER[par.parecer?.veredito] ?? ['', 'sem parecer ainda'];
+  const lado = l => el('section', { className: 'card conf-print' }, [
+    el('div', { className: 'nota', style: 'padding:8px 12px' }, [el('b', { textContent: par[l] }),
+      ` · ${par['maos_' + l]} mão${par['maos_' + l] > 1 ? 's' : ''} · procure o nick na posição ${par.maos[l][0]?.pos ?? '?'}`]),
+    ...par.maos[l].slice(0, 1).map(m => el('img', { src: `/print/${encodeURIComponent(m.png)}`, alt: `Print da mão ${m.hand_id}` }))]);
+  return [
+    el('section', { className: 'card conf-mao' }, [
+      el('h3', {}, [`${par.a} → ${par.b}`, el('small', { className: 'muted', textContent: ` · ${par.maos_a} + ${par.maos_b} mãos, nunca na mesma mesa` })]),
+      el('p', { style: 'margin:0' }, [el('b', { className: cls, textContent: `Parecer do Claude: ${rot}. ` }), par.parecer?.motivo ?? '']),
+      el('p', { className: 'nota', style: 'padding:0', textContent: 'Compare o nick escrito nos dois prints. "Mesmo jogador" junta o da esquerda no da direita na aba Jogadores (dá para desfazer); as stats da população não mudam.' }),
+      el('div', { className: 'conf-acoes' }, [
+        el('button', { className: 'btn primario', type: 'button', textContent: 'Mesmo jogador (juntar)', onclick: () => decidirNick(par, true) }),
+        el('button', { className: 'btn erro', type: 'button', textContent: 'Não é o mesmo', onclick: () => decidirNick(par, false) })])]),
+    el('div', { className: 'lado-a-lado nicks-prints' }, [lado('a'), lado('b')])];
 }
 
 // Hero × população no topo do Painel: onde o jeito dele jogar mais se afasta do field (só vilões).

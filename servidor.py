@@ -485,9 +485,36 @@ def dados_da_mao(con: sqlite3.Connection, hid: str) -> dict | None:
             "jogadores": jog, "linhas": linhas_de_mao(con, {hid}).get(hid, [])}
 
 
+def pareceres_nicks() -> dict:
+    """O parecer do Claude sobre cada par de nicks sugerido ("a|b" -> {veredito, motivo}), escrito depois de olhar
+    os prints; so orienta: quem junta e o dono. Fica fora do git (tem nicks de terceiros)."""
+    arq = RAIZ / "pareceres_nicks.json"
+    try:
+        return json.loads(arq.read_text(encoding="utf-8")) if arq.is_file() else {}
+    except ValueError:
+        return {}
+
+
+def proximo_nick(con: sqlite3.Connection) -> tuple[dict | None, int]:
+    """O proximo par de nicks a decidir, com ate 2 maos de cada um (print e posicao) para olhar o nick no print."""
+    sugestoes = resultados.sugestoes_alias(con, limite=1000)
+    if not sugestoes:
+        return None, 0
+    par = dict(sugestoes[0])
+    par["maos"] = {lado: [{"hand_id": h, "png": png, "pos": pos} for h, png, pos in con.execute(
+        "SELECT j.hand_id, h.png, j.pos FROM jogadores j JOIN hands h ON h.id = j.hand_id WHERE j.nome = ? "
+        "ORDER BY j.hand_id LIMIT 2", (par[lado],))] for lado in ("a", "b")}
+    par["parecer"] = pareceres_nicks().get(f"{par['a']}|{par['b']}")
+    return par, len(sugestoes)
+
+
 def conferir(con: sqlite3.Connection, corpo: dict) -> dict:
-    """A proxima mao a conferir: sorteada entre as nao conferidas, ou a primeira da fila de suspeitas."""
+    """A proxima mao a conferir: sorteada entre as nao conferidas, ou a primeira da fila de suspeitas; no modo
+    nicks, o proximo par de nicks que podem ser o mesmo jogador."""
     s = Handler.saude_cache or saude(con)
+    if corpo.get("modo") == "nicks":
+        par, restantes = proximo_nick(con)
+        return {"modo": "nicks", "nick": par, "restantes": restantes, "mao": None, "saude": s, "campos": CAMPOS_ERRO}
     modo = "suspeita" if corpo.get("modo") == "suspeita" else "sorteio"
     if modo == "suspeita":
         hid = s["suspeitas"][0] if s["suspeitas"] else None
@@ -549,6 +576,8 @@ def juntar(con: sqlite3.Connection, corpo: dict) -> dict:
         con.execute("INSERT OR REPLACE INTO aliases VALUES (?,?,?)", (a, b, int(bool(corpo.get("junta")))))
     resultados.reconstruir(con)
     copiar_conferencias(con)
+    if corpo.get("modo") == "nicks":  # veio da aba Conferir: devolve o proximo par
+        return conferir(con, {"modo": "nicks"})
     return jogadores(con, corpo)
 
 
