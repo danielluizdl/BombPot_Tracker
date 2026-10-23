@@ -10,14 +10,18 @@ existindo para quando a separacao voltar.
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import sqlite3
 import sys
+import threading
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
+import auditar
 import decisoes
 import resultados
 import tracker
@@ -258,6 +262,8 @@ def linhas_de_mao(con, ids: set[str]) -> dict[str, list]:
             verbo = "Bet"
         elif verbo == "Raise" and (valor or 0) <= maior:  # all-in menor que a bet: e um call
             verbo = "Call"
+        elif verbo == "Call" and not apostou and not valor:  # "Call $0.00" sem aposta na mesa: check
+            verbo, valor = "Check", None
         apostou = apostou or verbo in ("Bet", "Raise")
         if verbo in ("Bet", "Raise"):
             maior = valor or 0
@@ -396,11 +402,154 @@ def mda(con: sqlite3.Connection, corpo: dict) -> dict:
     return saida
 
 
-def jogadores(con: sqlite3.Connection, _corpo: dict) -> dict:
+def leaks(con: sqlite3.Connection, filtros: dict) -> list[dict]:
+    """Hero x populacao (sem o Hero) em cada stat do painel: a frequencia de cada lado e o lucro medio (BB a partir da
+    decisao, sem as maos marcadas). bb = (lucro do Hero - lucro da populacao) x decisoes do Hero: quanto o jeito dele
+    jogar o spot rende a mais (ou a menos) que o do field no mesmo spot. Lucro mistura sorte de carta: ver o n e o z."""
+    saida = []
+    for secao, nome, base, num in PAINEL:
+        # stat que depende das cartas (Weak%): do vilao so se sabe no showdown, do Hero sempre. Sem igualar, o Hero
+        # "blefa" 39% contra 15% so porque as cartas dele aparecem tambem quando ninguem paga. Os dois lados: so showdown.
+        de_cartas = "weak" in base or "weak" in num
+        if de_cartas:  # e o lucro ai mede a carta (mao fraca no showdown perde), nao a decisao: fica sem BB
+            base = {**base, "sd": [1]}
+        lado = {}
+        for hero in (1, 0):
+            w, p = where({**filtros, **base, "hero": [hero]})
+            cond, pc = where(num)
+            feitos, n, nl, lucro = con.execute(
+                f"SELECT sum(CASE WHEN {cond[len(' WHERE '):]} THEN 1 ELSE 0 END), count(*), count(lucro), sum(lucro) "
+                f"FROM decisoes{w}", pc + p).fetchone()
+            lado[hero] = (feitos or 0, n, nl, lucro or 0.0)
+        (fh, nh, lh, sh), (fp, np_, lp, sp) = lado[1], lado[0]
+        if not nh or not np_:
+            continue
+        ph, pp = fh / nh, fp / np_
+        junto = (fh + fp) / (nh + np_)
+        erro = (junto * (1 - junto) * (1 / nh + 1 / np_)) ** 0.5
+        bb = round((sh / lh - sp / lp) * nh, 1) if lh and lp and not de_cartas else None
+        saida.append({"secao": secao, "nome": nome, "base": base, "hero": [fh, nh], "pop": [fp, np_],
+                      "z": round((ph - pp) / erro, 2) if erro else 0.0, "bb": bb,
+                      "lucro_hero": round(sh / lh, 2) if lh else None, "lucro_pop": round(sp / lp, 2) if lp else None})
+    return sorted(saida, key=lambda s: (s["bb"] is None, s["bb"] if s["bb"] is not None else 0))
+
+
+# --- Conferir: o print ao lado da mao lida; so as maos sorteadas entram na taxa de erro ---------------------------
+CAMPOS_ERRO = ("carta", "board", "posição ou nick", "ação ou ordem", "valor", "saldo", "outro")
+
+
+def teto_erro(erros: int, n: int, confianca: float = 0.95) -> float | None:
+    """Limite de cima do intervalo de Clopper-Pearson para a taxa de erro: k erros em n maos sorteadas.
+    0 em 100 -> 2,95%; 0 em 300 -> 1,0%."""
+    if not n:
+        return None
+    if erros >= n:
+        return 1.0
+    alvo = 1 - confianca
+    lo, hi = erros / n, 1.0
+    for _ in range(60):  # bissecao: P(X <= erros; n, p) = alvo
+        p = (lo + hi) / 2
+        cdf = sum(math.comb(n, k) * p ** k * (1 - p) ** (n - k) for k in range(erros + 1))
+        lo, hi = (p, hi) if cdf > alvo else (lo, p)
+    return round(hi, 4)
+
+
+def saude(con: sqlite3.Connection) -> dict:
+    """O selo do topo: auditoria, leitor aceito e a taxa de erro medida na conferencia por sorteio."""
+    aud = auditar.auditar(con)
+    ruins = auditar.violacoes(aud)
+    n, erros = con.execute("SELECT count(*), coalesce(sum(ok = 0), 0) FROM conferencias WHERE modo = 'sorteio'").fetchone()
+    total = con.execute("SELECT count(*) FROM conferencias").fetchone()[0]
+    feitas = {h for (h,) in con.execute("SELECT hand_id FROM conferencias")}
+    return {"problemas": {k: len(v) for k, v in ruins.items()}, "exemplos": {k: v[:3] for k, v in ruins.items()},
+            "leitor": auditar.aceito(RAIZ), "conferidas": n, "erros": erros, "teto": teto_erro(erros, n),
+            "conferidas_total": total, "maos": con.execute("SELECT count(*) FROM hands").fetchone()[0],
+            "suspeitas": [s.split(":")[0] for s in aud["cartas_duvidosas"] if s.split(":")[0] not in feitas]}
+
+
+def dados_da_mao(con: sqlite3.Connection, hid: str) -> dict | None:
+    linha = con.execute("SELECT id, png, board, unidade, obs, n_jogadores, pior_rank FROM hands WHERE id = ?",
+                        (hid,)).fetchone()
+    if not linha:
+        return None
+    foldaram = {p for (p,) in con.execute("SELECT DISTINCT pos FROM acoes WHERE hand_id = ? AND verbo = 'Fold'", (hid,))}
+    jog = [{"pos": pos, "seat": seat, "nome": nome, "cartas": cs, "stack": stack, "net": net, "hero": hero,
+            "showdown": pos not in foldaram}
+           for pos, seat, nome, cs, stack, net, hero in con.execute(
+               "SELECT pos, seat, nome, cartas, stack, net, hero FROM jogadores WHERE hand_id = ? ORDER BY ordem_flop", (hid,))]
+    if sum(j["showdown"] for j in jog) < 2:  # ninguem mostrou: cartas de ninguem decidiram nada
+        for j in jog:
+            j["showdown"] = False
+    return {"hand_id": linha[0], "png": linha[1], "board": linha[2], "unidade": linha[3], "obs": linha[4],
+            "n": linha[5], "pior_rank": linha[6], "limiar": auditar.LIMIAR_CARTA, "data": decisoes.data_do_id(hid),
+            "jogadores": jog, "linhas": linhas_de_mao(con, {hid}).get(hid, [])}
+
+
+def conferir(con: sqlite3.Connection, corpo: dict) -> dict:
+    """A proxima mao a conferir: sorteada entre as nao conferidas, ou a primeira da fila de suspeitas."""
+    s = Handler.saude_cache or saude(con)
+    modo = "suspeita" if corpo.get("modo") == "suspeita" else "sorteio"
+    if modo == "suspeita":
+        hid = s["suspeitas"][0] if s["suspeitas"] else None
+    else:
+        r = con.execute("SELECT id FROM hands WHERE id NOT IN (SELECT hand_id FROM conferencias) "
+                        "ORDER BY random() LIMIT 1").fetchone()
+        hid = r[0] if r else None
+    return {"modo": modo, "mao": dados_da_mao(con, hid) if hid else None, "saude": s, "campos": CAMPOS_ERRO}
+
+
+def marcar(con: sqlite3.Connection, corpo: dict) -> dict:
+    """Grava a conferencia (com o que a leitura dizia) e devolve a proxima. Erro tira a mao do estudo na hora."""
+    hid = str(corpo.get("hand_id", ""))
+    versao = con.execute("SELECT versao_leitor FROM hands WHERE id = ?", (hid,)).fetchone()
+    if not versao:
+        raise ValueError("mao desconhecida")
+    ok = bool(corpo.get("ok"))
+    campo = corpo.get("campo") if not ok else None
+    if not ok and campo not in CAMPOS_ERRO:
+        raise ValueError("diga qual campo está errado")
+    modo = "suspeita" if corpo.get("modo") == "suspeita" else "sorteio"
+    with con:
+        con.execute("INSERT OR REPLACE INTO conferencias (hand_id, ok, campo, obs, assinatura, versao_leitor, quando, modo) "
+                    "VALUES (?,?,?,?,?,?,?,?)", (hid, int(ok), campo, str(corpo.get("obs") or "")[:500] or None,
+                                                 json.dumps(tracker.assinatura(con, hid)), versao[0], tracker.agora(), modo))
+    if not ok:
+        decisoes.reconstruir(con)
+        resultados.reconstruir(con)
+    copiar_conferencias(con)
+    Handler.saude_cache = saude(con)
+    return conferir(con, {"modo": modo})
+
+
+def copiar_conferencias(con: sqlite3.Connection) -> Path:
+    """As conferencias sao o unico dado que o refazer nao recria: um JSON delas (e dos aliases) a cada marcacao, na
+    pasta BOMBPOT_COPIA (a do drive) ou, sem ela, ao lado do banco (fora do git)."""
+    pasta = Path(os.environ.get("BOMBPOT_COPIA") or RAIZ)
+    dados = {t: [dict(zip([c[0] for c in cur.description], r)) for r in cur]
+             for t in ("conferencias", "aliases") for cur in [con.execute(f"SELECT * FROM {t}")]}
+    arq = pasta / "conferencias_bombpot.json"
+    arq.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
+    return arq
+
+
+def jogadores(con: sqlite3.Connection, corpo: dict) -> dict:
     """A lista da aba Jogadores e o que ficou fora do grafico (sem nick; saldo que nao confere com o poker)."""
     if not resultados.FORA:
         resultados.reconstruir(con)
-    return {"jogadores": resultados.jogadores(con), "fora": resultados.FORA}
+    return {"jogadores": resultados.jogadores(con, corpo.get("filtros")), "fora": resultados.FORA,
+            "sugestoes": resultados.sugestoes_alias(con)}
+
+
+def juntar(con: sqlite3.Connection, corpo: dict) -> dict:
+    """O dono decidiu se dois nicks sao o mesmo jogador; junta = 1 faz o primeiro virar o segundo no grafico."""
+    a, b = str(corpo.get("a", "")), str(corpo.get("b", ""))
+    if not a or not b or a == b:
+        raise ValueError("dois nicks diferentes")
+    with con:
+        con.execute("INSERT OR REPLACE INTO aliases VALUES (?,?,?)", (a, b, int(bool(corpo.get("junta")))))
+    resultados.reconstruir(con)
+    copiar_conferencias(con)
+    return jogadores(con, corpo)
 
 
 def exportar(con: sqlite3.Connection, filtros: dict, raiz: Path = RAIZ) -> tuple[str, int]:
@@ -427,17 +576,25 @@ def opcoes(con: sqlite3.Connection) -> dict:
             "forcas": decisoes.FORCAS, "draws": decisoes.DRAWS, "maos": n_maos}
 
 
+# ponytail: uma requisicao por vez; o site e de um usuario so, e assim nenhuma consulta le `decisoes` no meio da
+# reconstrucao (a conexao e a mesma para todas as threads)
+TRAVA = threading.Lock()
+
+
 class Handler(SimpleHTTPRequestHandler):
     con: sqlite3.Connection
-    maos_vistas = -1
+    versao_vista = -1
+    saude_cache: dict | None = None  # a auditoria leva ~2 s: refeita so quando o banco muda
 
     def atualizar(self) -> None:
-        """O vigia pode ter gravado maos com o site aberto: ~1 s para refazer `decisoes`."""
-        n = self.con.execute("SELECT count(*) FROM hands").fetchone()[0]
-        if n != Handler.maos_vistas:
+        """Refaz `decisoes` e `resultados` se outra conexao gravou no banco (vigia, refazer/aceitar, nomes,
+        conferencia pelo terminal). PRAGMA data_version muda a cada commit de outra conexao, nao a cada mao nova."""
+        v = self.con.execute("PRAGMA data_version").fetchone()[0]
+        if v != Handler.versao_vista:
             decisoes.reconstruir(self.con)
             resultados.reconstruir(self.con)
-            Handler.maos_vistas = n
+            Handler.saude_cache = saude(self.con)
+            Handler.versao_vista = v
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(PUBLIC), **kw)
@@ -455,9 +612,20 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(corpo)
 
     def do_GET(self) -> None:
+        if not self.path.startswith(("/api/", "/print/")):
+            return super().do_GET()
+        with TRAVA:
+            return self._get()
+
+    def do_POST(self) -> None:
+        with TRAVA:
+            self.atualizar()
+            return self._post()
+
+    def _get(self) -> None:
         if self.path == "/api/opcoes":
             self.atualizar()
-            return self._json(opcoes(self.con))
+            return self._json({**opcoes(self.con), "saude": Handler.saude_cache})
         if self.path.startswith("/print/"):
             nome = unquote(self.path[len("/print/"):])
             # so serve print de mao do banco: nada de caminho montado pelo navegador
@@ -471,9 +639,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(arq.read_bytes())
             return None
-        return super().do_GET()
+        return self._json({"erro": "rota desconhecida"}, 404)
 
-    def do_POST(self) -> None:
+    def _post(self) -> None:
         if self.path == "/api/exportar":
             filtros = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             texto, n = exportar(self.con, filtros if isinstance(filtros, dict) else {})
@@ -485,8 +653,10 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(corpo)
             return None
-        rotas = {"/api/consulta": consultar, "/api/painel": painel, "/api/mda": mda,
-                 "/api/jogadores": jogadores, "/api/serie": lambda con, corpo: resultados.serie(con, str(corpo.get("nome", "")))}
+        rotas = {"/api/consulta": consultar, "/api/painel": painel, "/api/mda": mda, "/api/leaks": leaks,
+                 "/api/jogadores": jogadores, "/api/juntar": juntar, "/api/conferir": conferir, "/api/marcar": marcar,
+                 "/api/serie": lambda con, corpo: resultados.serie(con, str(corpo.get("nome", "")),
+                                                                   filtros=corpo.get("filtros"))}
         if self.path not in rotas:
             return self._json({"erro": "rota desconhecida"}, 404)
         try:
@@ -503,7 +673,7 @@ def main(argv: list[str]) -> int:
     porta = int(argv[0]) if argv else 8770
     tracker.abrir().close()  # garante o esquema (e a coluna obs) antes de servir
     # ponytail: uma conexao para todas as threads; ok para um usuario local, um pool se um dia for multiusuario
-    Handler.con = sqlite3.connect(RAIZ / "bombpot.db", check_same_thread=False)
+    Handler.con = sqlite3.connect(RAIZ / "bombpot.db", check_same_thread=False, timeout=30)
     servidor = ThreadingHTTPServer(("127.0.0.1", porta), Handler)
     url = f"http://127.0.0.1:{porta}/"
     print(f"BombPot Tracker em {url} (Ctrl+C para parar)")

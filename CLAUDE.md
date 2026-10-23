@@ -7,25 +7,43 @@ Tracker de bomb pots do WPT Global: print -> mão (via `wptparse` do
 ## Mapa
 
 ```
-tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar / refazer
+tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar / refazer / aceitar / auditar.
+               Cada mao guarda versao_leitor (VERSAO-commit do Replayer, +sujo), sha256 e mtime do PNG e a pior
+               distancia de template das cartas (pior_rank/pior_naipe). UNIQUE(png): um print, uma mao.
+               refazer NUNCA mexe no banco: rele processadas/+recusadas/ para bombpot_novo.db (+hh_novo/) e escreve
+               refazer_<versao>.txt com o diff; aceitar audita, copia o banco (bombpot_antes_aceitar.db), troca as 4
+               tabelas da leitura numa transacao, move os prints que mudaram de pasta e grava REPLAYER_OK.
+auditar.py     invariantes de todas as maos (acao ilegal, cartas repetidas, saldo x cartas, fold = -8 BB, print
+               ausente, leitor nao aceito...); informativas: cartas duvidosas, hora estranha, excluidas
 decisoes.py    tabela derivada `decisoes`: uma linha por decisao pos-flop, com contexto, forca,
-               resposta da mesa, lucro, linhas, texturas e data
+               resposta da mesa, lucro, linhas, texturas e data; mao com erro conferido fica fora (SEM_ERRO)
 forca.py       categorias de forca do H2N + draws + weak (puro, test_forca.py)
 resultados.py  tabela derivada `resultados` (aba Jogadores): net, showdown e EV all-in (equity exata) por nick;
-               nick em jogadores.nome; mao com seguro/jackpot entra jogador a jogador (saldo conferido pelas
-               cartas; jackpot a parte; quem o seguro pagou e perdeu tudo = -investido, regra do Replayer)
+               nick em jogadores.nome (aliases confirmados juntam nicks); mao com seguro/jackpot entra jogador a
+               jogador (saldo conferido pelas cartas; jackpot a parte; quem o seguro pagou e perdeu tudo = -investido)
 servidor.py    site local (127.0.0.1:8770): filtros -> WHERE em `decisoes`; painel, agrupar, exportar;
-               aba MDA (`mda()`): arvore de acoes por rua, bet sizes com -AI, afunilar flop -> turn -> river
+               aba MDA (`mda()`); Voce x populacao (`leaks()`); aba Conferir (`conferir()`/`marcar()`, taxa de erro
+               Clopper-Pearson so das sorteadas); selo (`saude()`); refaz as derivadas por PRAGMA data_version
 public/        a tela (HTML/JS puro, tema do DESIGN.md do MetaLens)
 PLANO_H2N.md   pesquisa H2N/HM3, debate e prioridades (todas as 7 fatias feitas)
 test_banco_real.py  refaz as contas do site direto da tabela acoes (independente) no banco real; pulado sem bombpot.db
 ```
 
+Dado humano (o refazer nao recria; vai para `conferencias_bombpot.json` em `BOMBPOT_COPIA`): tabelas
+`conferencias` (o que a leitura dizia quando o dono conferiu: mao conferida que muda trava o aceitar) e `aliases`.
+
+Upgrade do Replayer: `python tracker.py refazer` -> ler o refazer_*.txt -> `python tracker.py aceitar`.
+
 Quirks do WPT:
 - aposta all-in sem aposta antes vem escrita como "Raise"; `decisoes` e a linha da mao normalizam para Bet;
 - valores: Bet = aposta, Raise = total na rua, Call = complemento; MAS call all-in (e "Raise" all-in por menos)
   vem com o total do jogador na rua (ID_1312645872378032128: bet 110, "Call 299 All-in" = 299 no river);
-- o HAND ID e um snowflake: `id >> 22` = ms desde 2016-09-25 08:28:07,268 (hora do print, erro <= 1 s).
+- o HAND ID e um snowflake: `id >> 22` = ms desde 2016-09-25 08:28:07,268 (hora do print, erro <= 1 s);
+  o arquivo do print fica 3,0 a 3,6 h depois (fuso), menos o print de outra conta salvo dias depois;
+- "Call $0.00" sem aposta na mesa e check (ID_1318375308628545536, turn e river);
+- na unidade BB a tela converte e arredonda: abaixo de 100 BB ja erra 0,1 (ID_1311798473139392512: raise 13,40,
+  calls 13,40, saldo -21,30) e a partir de 100 BB mostra sem decimal (ate 0,5 por valor). Em moeda e exata;
+- -1 BB no saldo de quem GANHOU cabe no rake (ate 3,1 BB): nenhuma checagem pega; no perdedor a conta e exata.
 
 Ao escrever Python por heredoc no Bash desta maquina, `\\r`/`\\n` dentro de string viraram caracteres de
 verdade: gravar scripts com a ferramenta Write.

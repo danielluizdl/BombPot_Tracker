@@ -142,8 +142,8 @@ def test_serie_reduzida_guarda_pico_vale_e_fim():
     c = sqlite3.connect(":memory:")
     c.executescript(r.ESQUEMA)
     nets = [(-1) ** (i // 7) * (i % 5) for i in range(5000)]
-    c.executemany("INSERT INTO resultados VALUES (?,?,?,?,?,?,?,?)",
-                  [(str(10 ** 18 + i), "x", "SB", 0, v, 0, v, 0.0) for i, v in enumerate(nets)])
+    c.executemany("INSERT INTO resultados VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  [(str(10 ** 18 + i), "x", "SB", 0, v, 0, v, 0.0, 8, None) for i, v in enumerate(nets)])
     s = r.serie(c, "x", maximo=100)
     acumulado = [0.0]
     for v in nets:
@@ -165,6 +165,8 @@ def test_jackpot_vira_saldo_de_poker():
 def test_bate_com_o_poker():
     assert r.bate_com_o_poker(-110.0, -110.0, 220) and not r.bate_com_o_poker(-0.5, -80.5, 200)  # seguro pago
     assert r.bate_com_o_poker(108.0, 110.0, 220) and not r.bate_com_o_poker(150.0, 110.0, 220)
+    # pote grande: 3,5% de 400 seriam 14 BB; o rake medido nunca passa de 3,1 BB
+    assert r.bate_com_o_poker(397.0, 400.0, 400) and not r.bate_com_o_poker(390.0, 400.0, 400)
 
 
 @real
@@ -201,4 +203,6 @@ def test_banco_real_seguro_pago_vira_o_resultado_do_poker(con):
     assert net("1318036774774321152", "HJ") == -80.5
     assert net("1320577398652190720", "SB") == -71.0 and net("1320577398652190720", "MP") == 174.5
     assert net("1317681494711513088", "UTG") is None
-    assert r.FORA["seguro_reconstruido"] == 3 and r.FORA["saldo_nao_confere"] == 1
+    # desde o leitor 28-bdf0a4c (aceito em 23/out) o proprio Replayer grava o saldo de poker de quem o seguro pagou:
+    # os tres saldos acima ja vem da leitura e o resultados.py nao reconstroi mais nenhum
+    assert r.FORA["seguro_reconstruido"] == 0 and r.FORA["saldo_nao_confere"] == 1

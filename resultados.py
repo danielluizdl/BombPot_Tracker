@@ -28,6 +28,8 @@ CREATE TABLE resultados (
   sd INTEGER NOT NULL,   -- ficou ate o fim com mais alguem (mostrou ou nao)
   ev REAL,               -- all-in ajustado; = net sem all-in; NULL = all-in sem as cartas de alguem (grafico usa net)
   jackpot REAL NOT NULL, -- BB pagos pela casa nesta mao (fora do net, que e so poker); 0 sem jackpot
+  n INTEGER NOT NULL,    -- jogadores na mao (filtro da aba)
+  data TEXT,             -- YYYY-MM-DD do HAND ID (filtro da aba)
   PRIMARY KEY (hand_id, pos)
 );
 CREATE INDEX resultados_nome ON resultados (nome);
@@ -178,7 +180,8 @@ def poker(n: int, ante: float, board: str, acoes: list, jog: dict) -> dict[str, 
 
 
 # Rake medido nas maos limpas: 0 a 3,1% do pote (no maximo 3 BB); o WPT arredonda o saldo em BB (ate 0,5).
-RAKE_MAX, ARREDONDA = 0.035, 0.5
+# O teto em BB importa no pote grande: 3,5% de 400 BB deixaria passar um saldo errado em ~14 BB.
+RAKE_MAX, RAKE_TETO, ARREDONDA = 0.035, 3.1, 0.5
 # O residuo que o WPT tira do pote (medido no Replayer: 0 a 2,10 BB em 485 maos); igual ao RESIDUO_MAX de la.
 RESIDUO_MAX = 2.5
 
@@ -187,7 +190,7 @@ def bate_com_o_poker(net: float, esperado: float, pote: float) -> bool:
     """O saldo e o do poker? Quem perdeu perde o que pos; quem ganhou leva o pote menos o rake."""
     if esperado < 0:
         return abs(net - esperado) <= ARREDONDA
-    return esperado - RAKE_MAX * pote - ARREDONDA <= net <= esperado + ARREDONDA
+    return esperado - min(RAKE_MAX * pote, RAKE_TETO) - ARREDONDA <= net <= esperado + ARREDONDA
 
 
 JACKPOT = re.compile(r"(\S+): (?:[^\d\s]+ )?([\d.,]+)(?: BB)? do ganho vieram do jackpot da casa, nao do poker "
@@ -239,11 +242,12 @@ def reconstruir(con: sqlite3.Connection) -> dict:
     acoes = defaultdict(list)
     for hid, *resto in con.execute("SELECT hand_id, rua, pos, verbo, valor, allin FROM acoes ORDER BY hand_id, ordem"):
         acoes[hid].append(tuple(resto))
+    apelido = principais(con)
     jog = defaultdict(dict)
     for hid, pos, nome, net, cs, hero in con.execute("SELECT hand_id, pos, nome, net, cartas, hero FROM jogadores"):
-        jog[hid][pos] = (nome, net, cs, hero)
+        jog[hid][pos] = (apelido.get(nome, nome), net, cs, hero)
     linhas, fora = [], {"sem_nick": 0, "saldo_nao_confere": 0, "seguro_reconstruido": 0}
-    for hid, n, ante, board, obs in con.execute("SELECT id, n_jogadores, ante_bb, board, obs FROM hands"):
+    for hid, n, ante, board, obs in con.execute(f"SELECT id, n_jogadores, ante_bb, board, obs FROM hands{decisoes.SEM_ERRO}"):
         if any(not j[0] for j in jog[hid].values()):
             fora["sem_nick"] += 1
             continue
@@ -281,12 +285,13 @@ def reconstruir(con: sqlite3.Connection) -> dict:
             rake = sum(esperado[p] - nets[p] for p in confere if esperado[p] > 0) if esperado else 0.0
             res = resultados_da_mao(n, ante or 0, board or "", acoes[hid], cartas, rake=max(rake, 0.0))
             fora["saldo_nao_confere"] += len(res) - len(confere)
+        data = decisoes.data_do_id(hid)
         for p, (net, sd, ev) in res.items():
             if p in confere:
-                linhas.append((hid, jog[hid][p][0], p, jog[hid][p][3], net, sd, ev, jackpot.get(p, 0.0)))
+                linhas.append((hid, jog[hid][p][0], p, jog[hid][p][3], net, sd, ev, jackpot.get(p, 0.0), n, data))
     with con:
         con.executescript(ESQUEMA)
-        con.executemany("INSERT INTO resultados VALUES (?,?,?,?,?,?,?,?)", linhas)
+        con.executemany("INSERT INTO resultados VALUES (?,?,?,?,?,?,?,?,?,?)", linhas)
     FORA.clear()
     FORA.update(fora)
     return {"linhas": len(linhas), **fora}
@@ -295,21 +300,98 @@ def reconstruir(con: sqlite3.Connection) -> dict:
 FORA: dict[str, int] = {}  # o que a ultima reconstrucao deixou fora, para o rodape do grafico
 
 
-def jogadores(con: sqlite3.Connection) -> list[dict]:
-    """Todos os nicks, de quem tem mais maos para quem tem menos (como no MetaLens)."""
-    return [{"nome": nome, "maos": maos, "net": round(net, 2), "ev": round(ev, 2), "sd": round(sd, 2), "jackpot": round(jp, 2)}
-            for nome, maos, net, ev, sd, jp in con.execute(
-                "SELECT nome, count(*), sum(net), sum(coalesce(ev, net)), sum(CASE WHEN sd THEN net ELSE 0 END), sum(jackpot) "
-                "FROM resultados GROUP BY nome ORDER BY 2 DESC, 1")]
+def principais(con: sqlite3.Connection) -> dict[str, str]:
+    """nick -> o nick principal, pelos pares que o dono confirmou (tabela aliases, junta = 1); segue a cadeia a -> b -> c."""
+    try:
+        pares = dict(con.execute("SELECT a, b FROM aliases WHERE junta = 1"))
+    except sqlite3.OperationalError:  # banco sem a tabela (testes em memoria)
+        return {}
+    saida = {}
+    for a in pares:
+        b, vistos = pares[a], {a}
+        while b in pares and b not in vistos:
+            vistos.add(b)
+            b = pares[b]
+        saida[a] = b
+    return saida
 
 
-def serie(con: sqlite3.Connection, nome: str, maximo: int = 1000) -> dict:
+def onde(filtros: dict | None) -> tuple[str, list]:
+    """Filtros da aba Jogadores: jogadores na mesa (lista) e periodo (YYYY-MM-DD)."""
+    partes, params = [], []
+    f = filtros or {}
+    n = [int(x) for x in f.get("n_jogadores") or [] if str(x).isdigit()]
+    if n:
+        partes.append(f"n IN ({','.join('?' * len(n))})")
+        params += n
+    for lado, op in (("min", ">="), ("max", "<=")):
+        v = str((f.get("data") or {}).get(lado) or "")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            partes.append(f"data {op} ?")
+            params.append(v)
+    return (" AND ".join(partes) or "1"), params
+
+
+def jogadores(con: sqlite3.Connection, filtros: dict | None = None) -> list[dict]:
+    """Todos os nicks, de quem tem mais maos para quem tem menos (como no MetaLens). ic = meia largura do intervalo de
+    95% do BB/100 (1,96 x desvio por mao / raiz de n, x 100): com poucas centenas de maos ela passa de 50 BB/100."""
+    w, p = onde(filtros)
+    saida = []
+    for nome, maos, net, ev, sd, jp, quad in con.execute(
+            "SELECT nome, count(*), sum(net), sum(coalesce(ev, net)), sum(CASE WHEN sd THEN net ELSE 0 END), sum(jackpot), "
+            f"sum(net * net) FROM resultados WHERE {w} GROUP BY nome ORDER BY 2 DESC, 1", p):
+        var = (quad - net * net / maos) / (maos - 1) if maos > 1 else None
+        ic = round(100 * 1.96 * (max(var, 0) ** 0.5) / maos ** 0.5, 1) if var is not None else None
+        saida.append({"nome": nome, "maos": maos, "net": round(net, 2), "ev": round(ev, 2), "sd": round(sd, 2),
+                      "jackpot": round(jp, 2), "ic": ic})
+    return saida
+
+
+def lev1(a: str, b: str) -> bool:
+    """Distancia de edicao exatamente 1 (troca, falta ou sobra de um caractere)."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    curto, longo = sorted((a, b), key=len)
+    i = next((k for k in range(len(curto)) if curto[k] != longo[k]), len(curto))
+    return curto[i:] == longo[i + 1:]
+
+
+def sugestoes_alias(con: sqlite3.Connection, limite: int = 60) -> list[dict]:
+    """Pares de nicks que podem ser o mesmo jogador partido pelo OCR: diferem em um caractere, nunca estiveram na mesma
+    mao e o dono ainda nao decidiu. Nick de 1-2 caracteres fica de fora (qualquer troca vira outro nick real)."""
+    maos: dict[str, set] = defaultdict(set)
+    for hid, nome in con.execute("SELECT hand_id, nome FROM jogadores WHERE nome IS NOT NULL"):
+        maos[nome].add(hid)
+    try:
+        decididos = {frozenset(par) for par in con.execute("SELECT a, b FROM aliases")}
+    except sqlite3.OperationalError:
+        decididos = set()
+    nomes = sorted((n for n in maos if len(n) >= 3 and not n.lower().startswith("player")), key=len)
+    por_tam: dict[int, list[str]] = defaultdict(list)
+    for n in nomes:
+        por_tam[len(n)].append(n)
+    saida = []
+    for a in nomes:
+        for b in por_tam[len(a)] + por_tam[len(a) + 1]:
+            if a < b or len(b) > len(a):
+                if lev1(a, b) and not (maos[a] & maos[b]) and frozenset((a, b)) not in decididos:
+                    menor, maior = sorted((a, b), key=lambda x: len(maos[x]))
+                    saida.append({"a": menor, "b": maior, "maos_a": len(maos[menor]), "maos_b": len(maos[maior])})
+    saida.sort(key=lambda s: -(s["maos_a"] + s["maos_b"]))
+    return saida[:limite]
+
+
+def serie(con: sqlite3.Connection, nome: str, maximo: int = 1000, filtros: dict | None = None) -> dict:
     """A serie do grafico: [mao n, net, showdown, ev, data, jackpot] acumulados; sem showdown = net - showdown.
 
     Mais de 2*maximo maos: por bloco fica o ponto mais baixo e o mais alto do net (picos e vales sobrevivem)."""
     pontos, net, sd, ev, jp, sem_cartas = [[0, 0.0, 0.0, 0.0, None, 0.0]], 0.0, 0.0, 0.0, 0.0, 0
+    w, p = onde(filtros)
     for i, (hid, n, s, e, j) in enumerate(con.execute(
-            "SELECT hand_id, net, sd, ev, jackpot FROM resultados WHERE nome = ? ORDER BY CAST(hand_id AS INTEGER)", (nome,)), 1):
+            f"SELECT hand_id, net, sd, ev, jackpot FROM resultados WHERE nome = ? AND {w} ORDER BY CAST(hand_id AS INTEGER)",
+            [nome, *p]), 1):
         net += n
         jp += j
         sd += n if s else 0

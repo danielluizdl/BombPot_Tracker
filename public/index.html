@@ -260,6 +260,44 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
   .mesa { height: 320px; } .feltro { inset: 46px 34px; } .assento { width: 92px; }
   .pilha { width: 160px; }
 }
+
+/* --- selo de confiança (topo) --- */
+.selo { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; color: var(--muted); background: var(--card); cursor: pointer; }
+.selo i { width: 8px; height: 8px; border-radius: 50%; background: var(--neutro); display: block; }
+.selo.ok i { background: var(--bom); } .selo.ruim i { background: var(--ruim); }
+
+/* --- conferir: o print ao lado da mão lida --- */
+.conf-topo { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.conf-topo .placar { color: var(--muted); }
+.conf-topo .placar b { color: var(--text); }
+.conf-grade { display: grid; grid-template-columns: minmax(280px, 430px) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .conf-grade { grid-template-columns: 1fr; } }
+.conf-print { max-height: 82vh; overflow: auto; background: #000; }
+.conf-print img { width: 100%; display: block; }
+.conf-mao { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.conf-mao h3 { margin: 0; font-size: 15px; }
+.conf-mao table { border-collapse: collapse; font-size: 13px; width: 100%; }
+.conf-mao td, .conf-mao th { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.conf-mao .olhar { background: #2b2410; }
+.conf-mao .olhar td:first-child::before { content: "● "; color: var(--neutro); }
+.carta { font-family: Consolas, monospace; font-weight: 600; letter-spacing: .5px; }
+.rua-linha { font-family: Consolas, monospace; font-size: 13px; line-height: 1.7; }
+.rua-linha b { color: var(--muted); font-weight: 500; display: inline-block; min-width: 54px; }
+.checklist { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.conf-acoes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.conf-acoes select, .conf-acoes input { min-height: 34px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.btn.erro { border-color: var(--ruim); color: var(--ruim); }
+
+/* --- hero x população, sugestões de nick --- */
+.leaks td.z { color: var(--muted); }
+.leaks tr.sig th { color: var(--text); }
+.leaks tr:not(.sig) { opacity: .55; }
+.sugestoes { padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.sugestao { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.sugestao span { min-width: 0; overflow-wrap: anywhere; }
+.filtros-jog { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding: 10px; }
+.filtros-jog input[type=date] { min-height: 34px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color-scheme: dark; }
 </style>
 </head>
 <body>
@@ -271,6 +309,7 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
     <button role="tab" id="aba-painel" aria-selected="false">Painel de tendências</button>
     <button role="tab" id="aba-mda" aria-selected="false">MDA</button>
     <button role="tab" id="aba-jogadores" aria-selected="false">Jogadores</button>
+    <button role="tab" id="aba-conferir" aria-selected="false">Conferir</button>
   </div>
   <div class="direita">
     <select id="presets" aria-label="Filtros prontos"><option value="">Filtros prontos…</option></select>
@@ -286,6 +325,7 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 <main id="painel" hidden></main>
 <main id="mda" hidden></main>
 <main id="jogadores" hidden></main>
+<main id="conferir" hidden></main>
 <div id="fundo" hidden></div>
 <aside id="avancado" aria-label="Mais filtros">
   <header><div class="logo">Mais filtros</div><div class="direita"><button class="btn" id="fechar-avancado">Fechar</button></div></header>

@@ -110,15 +110,126 @@ def test_lote_em_paralelo_da_o_mesmo_resultado(tmp_path):
     assert con.execute("SELECT count(*) FROM acoes").fetchone() == (16 + 13,)  # 13 acoes no print de c.png
 
 
-def test_refazer_troca_igual_e_tira_a_que_virou_recusa(tmp_path):
+def _uma_mao(tmp_path, nome="a.png"):
     con = tracker.abrir(tmp_path / "t.db")
-    (tmp_path / "entrada").mkdir()
-    shutil.copy(GABARITO, tmp_path / "entrada" / "a.png")
-    assert tracker.processar(tmp_path / "entrada" / "a.png", con, tmp_path) == "ok"
-    assert tracker.refazer(con, tmp_path, processos=1) == {"igual": 1, "mudou": 0, "recusada": 0}
-    # o mesmo arquivo trocado por lixo: a leitura nova recusa, e a mao sai do banco
-    (tmp_path / "processadas" / "a.png").write_bytes(b"nao e png")
-    con.execute("UPDATE hands SET png = 'a.png'")
-    assert tracker.refazer(con, tmp_path, processos=1)["recusada"] == 1
-    assert con.execute("SELECT count(*) FROM hands").fetchone() == (0,)
-    assert (tmp_path / "recusadas" / "a.png").is_file()
+    (tmp_path / "entrada").mkdir(exist_ok=True)
+    shutil.copy(GABARITO, tmp_path / "entrada" / nome)
+    assert tracker.processar(tmp_path / "entrada" / nome, con, tmp_path) == "ok"
+    return con
+
+
+def test_mao_guarda_leitor_hash_data_e_distancia_das_cartas(tmp_path):
+    con = _uma_mao(tmp_path)
+    versao, sha, mtime, rank = con.execute("SELECT versao_leitor, sha256, mtime, pior_rank FROM hands").fetchone()
+    assert versao == tracker.versao_leitor() and versao.startswith(f"{tracker.VERSAO}-")
+    assert sha == __import__("hashlib").sha256(GABARITO.read_bytes()).hexdigest()
+    assert mtime.endswith("Z") and 0 <= rank <= 0.16
+
+
+def test_print_com_nome_repetido_grava_o_nome_final(tmp_path):
+    con = _uma_mao(tmp_path, "x.png")
+    # outro print (outra mao) salvo com o mesmo nome: vai para processadas como "x (1).png", e o banco aponta para ele
+    shutil.copy(TESTS / "31-19 55-9 bomb.png", tmp_path / "entrada" / "x.png")
+    assert tracker.processar(tmp_path / "entrada" / "x.png", con, tmp_path) == "ok"
+    assert sorted(p for (p,) in con.execute("SELECT png FROM hands")) == ["x (1).png", "x.png"]
+    assert all((tmp_path / "processadas" / p).is_file() for (p,) in con.execute("SELECT png FROM hands"))
+
+
+def test_o_mesmo_print_nao_vira_duas_maos(tmp_path):
+    con = _uma_mao(tmp_path)
+    with pytest.raises(__import__("sqlite3").IntegrityError):
+        con.execute("INSERT INTO hands (id, png, n_jogadores, lido_em) VALUES ('2', 'a.png', 8, 'x')")
+
+
+def test_banco_antigo_ganha_as_colunas_novas(tmp_path):
+    import sqlite3
+    velho = sqlite3.connect(tmp_path / "v.db")
+    velho.executescript("CREATE TABLE hands (id TEXT PRIMARY KEY, png TEXT NOT NULL, n_jogadores INTEGER NOT NULL,"
+                        " ante_bb REAL, board TEXT, unidade TEXT, lido_em TEXT NOT NULL);"
+                        "CREATE TABLE jogadores (hand_id TEXT, pos TEXT, seat INTEGER, stack REAL, net REAL, cartas TEXT,"
+                        " hero INTEGER NOT NULL, ordem_flop INTEGER, PRIMARY KEY (hand_id, pos));"
+                        "INSERT INTO hands VALUES ('1', 'a.png', 8, 64, '', 'BB', 'x');")
+    velho.commit()
+    velho.close()
+    con = tracker.abrir(tmp_path / "v.db")
+    assert [c[1] for c in con.execute("PRAGMA table_info(hands)")] == list(tracker.COLS_HANDS)
+    assert "nome" in {c[1] for c in con.execute("PRAGMA table_info(jogadores)")}
+    assert con.execute("SELECT png FROM hands").fetchone() == ("a.png",)
+
+
+def test_banco_com_a_coluna_de_naipe_perde_so_ela(tmp_path):  # a medida de 23/out que nao prestou
+    con = _uma_mao(tmp_path)
+    con.execute("ALTER TABLE hands ADD COLUMN pior_naipe REAL")
+    con.execute("UPDATE hands SET pior_naipe = 1")
+    con.commit()
+    antes = con.execute(f"SELECT {','.join(tracker.COLS_HANDS)} FROM hands").fetchall()
+    con.close()
+    con = tracker.abrir(tmp_path / "t.db")
+    assert [c[1] for c in con.execute("PRAGMA table_info(hands)")] == list(tracker.COLS_HANDS)
+    assert con.execute("SELECT * FROM hands").fetchall() == antes
+    with pytest.raises(__import__("sqlite3").IntegrityError):  # o indice do print continua
+        con.execute("INSERT INTO hands (id, png, n_jogadores, lido_em) VALUES ('2', ?, 8, 'x')", (antes[0][1],))
+
+
+def test_refazer_nao_mexe_no_banco_e_escreve_o_diff(tmp_path):
+    con = _uma_mao(tmp_path)
+    antes = tracker.assinatura(con, "1311804268404871168")
+    con.execute("UPDATE acoes SET valor = 99 WHERE hand_id = '1311804268404871168' AND ordem = 6")  # leitura "velha"
+    con.commit()
+    contagem = tracker.refazer(con, tmp_path, processos=1)
+    assert contagem["mudou"] == 1 and contagem["igual"] == 0
+    assert con.execute("SELECT valor FROM acoes WHERE ordem = 6").fetchone() == (99,)  # o banco ficou igual
+    diff = next(tmp_path.glob("refazer_*.txt")).read_text(encoding="utf-8")
+    assert "mudou  1311804268404871168: acoes 6:" in diff and "99" in diff
+    assert (tmp_path / "bombpot_novo.db").is_file() and (tmp_path / "processadas" / "a.png").is_file()
+    assert tracker.aceitar(con, tmp_path).startswith("aceito")
+    assert tracker.assinatura(con, "1311804268404871168") == antes
+    assert not (tmp_path / "bombpot_novo.db").exists() and (tmp_path / "bombpot_antes_aceitar.db").is_file()
+    assert (tmp_path / "REPLAYER_OK").read_text().strip() == tracker.versao_leitor()
+    assert (tmp_path / "hh" / "maos" / "1311804268404871168.txt").is_file()
+
+
+def test_aceitar_move_a_que_virou_recusa_e_a_que_voltou(tmp_path):
+    con = _uma_mao(tmp_path)
+    (tmp_path / "recusadas").mkdir(exist_ok=True)
+    shutil.copy(TESTS / "31-19 55-9 bomb.png", tmp_path / "recusadas" / "b.png")  # recusada que agora le
+    con.execute("INSERT INTO recusas VALUES ('b.png', 'leitor antigo', 'x')")
+    (tmp_path / "processadas" / "a.png").write_bytes(b"nao e png")  # o print que agora nao le
+    con.commit()
+    contagem = tracker.refazer(con, tmp_path, processos=1)
+    assert contagem["saiu"] == 1 and contagem["nova"] == 1
+    assert tracker.aceitar(con, tmp_path).startswith("aceito")
+    assert (tmp_path / "processadas" / "b.png").is_file() and (tmp_path / "recusadas" / "a.png").is_file()
+    assert con.execute("SELECT png FROM recusas").fetchall() == [("a.png",)]
+    assert not (tmp_path / "hh" / "maos" / "1311804268404871168.txt").exists()
+
+
+def test_conferencia_sobrevive_ao_aceitar_e_trava_se_a_mao_mudar(tmp_path):
+    import json
+    con = _uma_mao(tmp_path)
+    hid = "1311804268404871168"
+    certa = tracker.assinatura(con, hid)
+    errada = json.loads(json.dumps(certa))
+    errada["acoes"][6][4] = 21.0  # o dono conferiu uma leitura que dizia 21 onde a nova diz 21,5
+    con.execute("INSERT INTO conferencias VALUES (?, 1, NULL, NULL, ?, 'v', 'x', 'sorteio')", (hid, json.dumps(errada)))
+    con.commit()
+    assert tracker.refazer(con, tmp_path, processos=1)["conferida_mudou"] == 1
+    msg = tracker.aceitar(con, tmp_path)
+    assert msg.startswith("recusado, mao conferida mudou") and "acoes 6" in msg
+    con.execute("UPDATE conferencias SET assinatura = ?", (json.dumps(certa),))
+    con.commit()
+    tracker.refazer(con, tmp_path, processos=1)
+    assert tracker.aceitar(con, tmp_path).startswith("aceito")
+    assert con.execute("SELECT count(*) FROM conferencias").fetchone() == (1,)
+
+
+def test_aceitar_recusa_banco_novo_que_falha_na_auditoria(tmp_path):
+    con = _uma_mao(tmp_path)
+    tracker.refazer(con, tmp_path, processos=1)
+    novo = tracker.abrir(tmp_path / "bombpot_novo.db")
+    novo.execute("UPDATE jogadores SET cartas = '2s 9s' WHERE hero = 1")  # repete as cartas do board
+    novo.commit()
+    novo.close()
+    msg = tracker.aceitar(con, tmp_path)
+    assert msg.startswith("recusado, a auditoria") and "cartas_repetidas" in msg
+    assert con.execute("SELECT cartas FROM jogadores WHERE hero = 1").fetchone() == ("Kc 10h",)

@@ -804,7 +804,8 @@ function detalheMda() {
         cel(d['1 call']), cel(d['2 calls']), cel(d['3+ calls']), cel(d.aumentado),
         el('td', { className: 'num', title: 'Quando levou raise, o que ele fez depois' }, [totalDep
           ? `F ${pct(dep.Fold, totalDep)}% · C ${pct(dep.Call, totalDep)}% · R ${pct(dep.Raise, totalDep)}%` : '—']),
-        el('td', {}, [ai ? el('span') : botaoAfunilar(faixa, 'aposta')]),
+        // faixa feita só de bets all-in (somadas pelo "all-in junto"): ninguém aposta no turn depois, afunilar daria vazio
+      el('td', {}, [ai || (!separarAI && !(no.tamanhos[acao] ?? {})[faixa]) ? el('span') : botaoAfunilar(faixa, 'aposta')]),
       ]));
     }
     cab = ['Tamanho', 'Freq.', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (ele)', ''];
@@ -885,6 +886,7 @@ const LINHAS_GRAFICO = [
 const linhasDe = s => LINHAS_GRAFICO.filter(l => !l.so || l.so(s));
 const desligadas = new Set();
 let listaJogadores = null, jogadorSel = lerLocal('bp.jogador'), buscaJogador = '', serieAtual = null;
+let filtrosJog = lerLocal('bp.filtrosJog') ?? {};  // { n_jogadores: [8, 7], data: { min, max } }
 const bb = (v, casas = 1) => `${v < 0 ? '−' : v > 0 ? '+' : ''}${fmt(Math.abs(v), casas)} BB`;
 const por100 = (v, maos) => (maos ? 100 * v / maos : 0);
 const corValor = v => (v > 0 ? 'bom' : v < 0 ? 'ruim' : '');
@@ -899,14 +901,18 @@ function tabelaJogadores() {
     el('th', { textContent: j.nome }),
     el('td', { className: 'num', textContent: j.maos.toLocaleString('pt-BR') }),
     el('td', { className: 'num' }, [el('b', { className: corValor(j.net), textContent: bb(j.net, 0) })]),
-    el('td', { className: 'num' }, [el('b', { className: corValor(j.net), textContent: fmt(por100(j.net, j.maos), 1) })]),
+    el('td', { className: 'num' + (j.maos < AMOSTRA_MINIMA ? ' fraca' : ''),
+      title: j.ic === null ? 'uma mão só: sem intervalo' : `intervalo de 95%: ${fmt(por100(j.net, j.maos) - j.ic, 0)} a ${fmt(por100(j.net, j.maos) + j.ic, 0)} BB/100` }, [
+      el('b', { className: corValor(j.net), textContent: fmt(por100(j.net, j.maos), 1) }),
+      el('small', { textContent: j.ic === null ? '' : ` ±${fmt(j.ic, 0)}` })]),
     el('td', { className: 'num' }, [el('span', { className: corValor(j.ev), textContent: fmt(por100(j.ev, j.maos), 1) })]),
   ])));
   return el('div', { className: 'card lista-jogadores' }, [
     el('input', { type: 'search', placeholder: `procurar entre ${listaJogadores.jogadores.length.toLocaleString('pt-BR')} jogadores`,
       value: buscaJogador, ariaLabel: 'Procurar jogador', oninput: e => { buscaJogador = e.target.value; redesenharLista(); } }),
     el('div', { className: 'rolar' }, [el('table', {}, [
-      el('thead', {}, [el('tr', {}, [['Jogador'], ['Mãos'], ['Net'], ['BB/100'], ['EV BB/100', 'BB/100 pelo EV ajustado por all-in']]
+      el('thead', {}, [el('tr', {}, [['Jogador'], ['Mãos'], ['Net'], ['BB/100', '± a meia largura do intervalo de 95%: com poucas centenas de mãos ela passa de 50 BB/100'],
+        ['EV BB/100', 'BB/100 pelo EV ajustado por all-in']]
         .map(([c, d]) => el('th', d ? { textContent: c, title: d } : { textContent: c })))]), corpo])]),
     lista.length > 300 ? el('p', { className: 'nota', textContent: `mostrando 300 de ${lista.length}: procure pelo nome para achar os outros` }) : null,
   ]);
@@ -920,8 +926,66 @@ function redesenharLista() {
 async function escolherJogador(nome) {
   jogadorSel = nome;
   gravarLocal('bp.jogador', nome);
-  serieAtual = await (await fetch('/api/serie', { method: 'POST', body: JSON.stringify({ nome }) })).json();
+  serieAtual = await (await fetch('/api/serie', { method: 'POST', body: JSON.stringify({ nome, filtros: filtrosJog }) })).json();
   desenharJogadores();
+}
+
+function mudarFiltrosJog(f) {
+  filtrosJog = f;
+  gravarLocal('bp.filtrosJog', f);
+  listaJogadores = null;
+  serieAtual = null;
+  consultar();
+}
+
+function barraFiltrosJog() {
+  const jog = filtrosJog.n_jogadores ?? [];
+  const seg = el('div', { className: 'seg', role: 'group', 'aria-label': 'Jogadores na mesa' });
+  for (let k = 8; k >= 2; k--) {
+    seg.append(el('button', { type: 'button', textContent: String(k), ariaPressed: String(jog.includes(k)), onclick: () => {
+      const s = new Set(jog);
+      s.has(k) ? s.delete(k) : s.add(k);
+      const f = { ...filtrosJog };
+      if (s.size) f.n_jogadores = [...s].sort((a, b) => b - a); else delete f.n_jogadores;
+      mudarFiltrosJog(f);
+    } }));
+  }
+  const data = (lado, rot) => el('input', { type: 'date', id: `jog-data-${lado}`, value: filtrosJog.data?.[lado] ?? '', 'aria-label': rot,
+    min: opcoes.datas?.[0] ?? '', max: opcoes.datas?.[1] ?? '',
+    onchange: e => {
+      const d = { ...(filtrosJog.data ?? {}), [lado]: e.target.value };
+      const f = { ...filtrosJog, data: d };
+      if (!d.min && !d.max) delete f.data;
+      mudarFiltrosJog(f);
+    } });
+  const algum = Object.keys(filtrosJog).length > 0;
+  return el('div', { className: 'card filtros-jog' }, [
+    el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Jogadores na mesa (marque vários)' }), seg]),
+    el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'De' }), data('min', 'Data inicial')]),
+    el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Até' }), data('max', 'Data final')]),
+    algum ? el('button', { className: 'btn', type: 'button', textContent: 'Tirar filtros', onclick: () => mudarFiltrosJog({}) }) : null]);
+}
+
+// O OCR pode partir um jogador em dois nicks (um 丶 inicial que o OCR perde): pares a um caractere de distância que nunca
+// sentaram na mesma mão. Só junta com a confirmação do dono; "não é" some da lista para sempre.
+function cartaoSugestoes() {
+  const sug = listaJogadores.sugestoes ?? [];
+  if (!sug.length) return null;
+  const decidir = async (s, junta) => {
+    const r = await (await fetch('/api/juntar', { method: 'POST', body: JSON.stringify({ a: s.a, b: s.b, junta, filtros: filtrosJog }) })).json();
+    if (r.erro) return;
+    listaJogadores = r;
+    serieAtual = null;
+    consultar();
+  };
+  return el('details', { className: 'card' }, [
+    el('summary', { textContent: `Possíveis nicks repetidos (${sug.length})` }),
+    el('div', { className: 'sugestoes' }, [
+      el('p', { className: 'nota', style: 'padding:0', textContent: 'Dois nicks a um caractere de distância que nunca estiveram na mesma mão: pode ser o mesmo jogador lido de dois jeitos. Confira num print antes de juntar.' }),
+      ...sug.map(s => el('div', { className: 'sugestao' }, [
+        el('span', { textContent: `${s.a} (${s.maos_a}) → ${s.b} (${s.maos_b})` }),
+        el('button', { className: 'btn', type: 'button', textContent: 'mesmo jogador', onclick: () => decidir(s, true) }),
+        el('button', { className: 'btn', type: 'button', textContent: 'não é', onclick: () => decidir(s, false) })]))])]);
 }
 
 const passoRedondo = (faixa, n) => {
@@ -982,7 +1046,9 @@ function graficoJogador(s, caixa) {
 function desenharJogadores() {
   if (!listaJogadores) return;
   const caixa = el('div', { className: 'card grafico-jogador' });
-  $('jogadores').replaceChildren(el('div', { className: 'jogadores-grade' }, [tabelaJogadores(), caixa]));
+  $('jogadores').replaceChildren(barraFiltrosJog(),
+    el('div', { className: 'jogadores-grade' }, [el('div', { style: 'display:flex;flex-direction:column;gap:14px;min-width:0' },
+      [tabelaJogadores(), cartaoSugestoes()]), caixa]));
   const s = serieAtual;
   if (!s || s.nome !== jogadorSel) return;
   if (!s.maos) { caixa.append(el('p', { className: 'nota', textContent: 'Sem mãos para este jogador.' })); return; }
@@ -1006,7 +1072,7 @@ function desenharJogadores() {
 }
 
 async function consultarJogadores(meu) {
-  if (!listaJogadores) listaJogadores = await (await fetch('/api/jogadores', { method: 'POST', body: '{}' })).json();
+  if (!listaJogadores) listaJogadores = await (await fetch('/api/jogadores', { method: 'POST', body: JSON.stringify({ filtros: filtrosJog }) })).json();
   if (meu !== pedido) return;
   document.body.classList.remove('carregando');
   if (!jogadorSel || !listaJogadores.jogadores.some(j => j.nome === jogadorSel)) jogadorSel = listaJogadores.jogadores[0]?.nome;
@@ -1018,6 +1084,140 @@ window.addEventListener('resize', () => {
   clearTimeout(tempoRedim);
   tempoRedim = setTimeout(() => { if (vista === 'jogadores') desenharJogadores(); }, 150);
 });
+
+// ------------------------------------------------------------------------- selo de confiança e aba Conferir
+// O selo do topo resume o que se pode afirmar sobre os dados: a auditoria (invariantes em todas as mãos) e a taxa de
+// erro medida conferindo mãos sorteadas contra o print (limite de cima de 95%, Clopper-Pearson).
+
+const pctTeto = t => (t === null || t === undefined ? '' : `${fmt(100 * t, t < 0.1 ? 1 : 0)}%`);
+
+function desenharSelo(s) {
+  if (!s) return;
+  const problemas = Object.values(s.problemas).reduce((a, b) => a + b, 0);
+  const partes = [problemas ? `auditoria: ${problemas} problema${problemas > 1 ? 's' : ''}` : 'auditoria ok'];
+  if (!s.leitor) partes.push('leitor ainda não aceito');
+  partes.push(s.conferidas ? `${s.conferidas} conferidas · erro ≤ ${pctTeto(s.teto)}` : 'nenhuma mão conferida');
+  const titulo = [
+    problemas ? 'Checagens que falharam: ' + Object.entries(s.exemplos).map(([k, v]) => `${k} (${s.problemas[k]}): ${v.join(' | ')}`).join(' · ')
+      : `Todas as invariantes valem nas ${s.maos.toLocaleString('pt-BR')} mãos (python tracker.py auditar).`,
+    s.leitor ? `Leitor aceito: ${s.leitor}.` : 'Nenhuma leitura aceita ainda: rode python tracker.py refazer e depois aceitar.',
+    s.conferidas ? `${s.conferidas} mãos sorteadas conferidas no print, ${s.erros} com erro: a taxa real de erro fica abaixo de ${pctTeto(s.teto)} com 95% de confiança.`
+      : 'Confira mãos sorteadas na aba Conferir para medir a taxa de erro da leitura.',
+    'Clique para conferir.'].join('\n');
+  const selo = el('button', { type: 'button', id: 'selo', className: 'selo ' + (problemas ? 'ruim' : s.conferidas && s.leitor ? 'ok' : ''),
+    title: titulo, onclick: () => trocarVista('conferir') }, [el('i'), partes.join(' · ')]);
+  const velho = $('selo');
+  if (velho) velho.replaceWith(selo); else $('info').after(selo);
+}
+
+let confModo = 'sorteio', confDados = null;
+
+async function consultarConferir(meu, marcacao = null) {
+  const r = await (await fetch(marcacao ? '/api/marcar' : '/api/conferir', { method: 'POST',
+    body: JSON.stringify(marcacao ?? { modo: confModo }) })).json();
+  if (meu !== pedido) return;
+  document.body.classList.remove('carregando');
+  if (r.erro) { $('conferir').prepend(el('p', { className: 'nota ruim', textContent: 'Erro: ' + r.erro })); return; }
+  confDados = r;
+  if (marcacao) listaJogadores = null;  // um erro tira a mão do estudo: a aba Jogadores relê
+  desenharSelo(r.saude);
+  desenharConferir();
+}
+
+function marcarConferencia(ok) {
+  const m = confDados?.mao;
+  if (!m) return;
+  const campo = $('conf-campo')?.value, obs = $('conf-obs')?.value;
+  if (!ok && !campo) { $('conf-campo').focus(); return; }
+  document.body.classList.add('carregando');
+  consultarConferir(++pedido, { hand_id: m.hand_id, ok, campo, obs, modo: confModo });
+}
+
+const textoCartas = cs => (cs ?? '').split(' ').filter(Boolean).map(c => c.replace('10', 'T')).join(' ');
+
+function desenharConferir() {
+  const r = confDados, s = r.saude, m = r.mao;
+  const segModo = el('div', { className: 'seg', role: 'group', 'aria-label': 'Modo' }, [
+    ['sorteio', 'Sorteio (mede a taxa)'], ['suspeita', `Suspeitas (${s.suspeitas.length})`]].map(([v, t]) => el('button', {
+    type: 'button', textContent: t, ariaPressed: String(confModo === v), onclick: () => { confModo = v; consultar(); } })));
+  const placar = el('span', { className: 'placar' }, s.conferidas
+    ? [el('b', { textContent: `${s.conferidas}` }), ` sorteadas conferidas · `, el('b', { textContent: `${s.erros}` }), ` com erro · taxa de erro ≤ `,
+      el('b', { textContent: pctTeto(s.teto) }), ' (95%)' + (s.conferidas_total > s.conferidas ? ` · mais ${s.conferidas_total - s.conferidas} da fila de suspeitas` : '')]
+    : ['Nenhuma mão sorteada conferida ainda. 100 sem erro dizem "erro < 3%"; 300, "< 1%".']);
+  const topo = el('section', { className: 'card conf-topo', style: 'padding:12px 16px' }, [segModo, placar]);
+  if (!m) {
+    $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota', textContent:
+      confModo === 'suspeita' ? 'Nenhuma carta duvidosa esperando conferência.' : 'Todas as mãos já foram conferidas.' })]));
+    return;
+  }
+  const jogs = el('table', {}, [
+    el('thead', {}, [el('tr', {}, ['Pos', 'Nick', 'Cartas', 'Stack', 'Saldo'].map(c => el('th', { textContent: c })))]),
+    el('tbody', {}, m.jogadores.map(j => el('tr', { className: j.cartas && !j.showdown ? 'olhar' : '',
+      title: j.cartas && !j.showdown ? 'Estas cartas não decidiram o showdown: nenhuma conta confere, só o seu olho.' : '' }, [
+      el('td', { textContent: j.pos + (j.hero ? ' (Hero)' : '') }), el('td', { textContent: j.nome ?? '—' }),
+      el('td', { className: 'carta', textContent: textoCartas(j.cartas) || '—' }),
+      el('td', { className: 'num', textContent: fmt(j.stack) }),
+      el('td', { className: 'num ' + corValor(j.net), textContent: fmt(j.net) })])))]);
+  const ruas = el('div', { className: 'rua-linha' }, m.linhas.map(([rua, board, pote, acoes]) => el('div', {}, [
+    el('b', { textContent: NOME_RUA[rua] }), el('span', { className: 'carta', textContent: textoCartas(board) }), ` (${fmt(pote)}) `,
+    acoes.map(([pos, a]) => `${pos} ${a}`).join(' · ')])));
+  const duvida = m.pior_rank > m.limiar;
+  const corpo = el('section', { className: 'card conf-mao' }, [
+    el('h3', {}, [`HAND ID ${m.hand_id}`, el('small', { className: 'muted', textContent: ` · ${m.data ?? ''} · ${m.n} jogadores · valores em BB (print em ${m.unidade})` })]),
+    m.obs ? el('p', { className: 'nota', style: 'padding:0', textContent: `Marcada: ${m.obs}` }) : null,
+    duvida ? el('p', { className: 'nota neutro', style: 'padding:0', textContent:
+      `Carta duvidosa: o número de alguma carta ficou a ${fmt(m.pior_rank, 3)} do modelo (99% das mãos ficam abaixo de ${fmt(m.limiar, 2)}; o leitor aceita até 0,16). Olhe todas as cartas com calma.` }) : null,
+    el('div', {}, [el('b', { textContent: 'Board ' }), el('span', { className: 'carta', textContent: textoCartas(m.board) })]),
+    jogs, ruas,
+    el('ul', { className: 'checklist' }, [
+      el('li', { textContent: 'as cartas marcadas com ● (não decidiram o showdown: só o seu olho confere) e o board;' }),
+      el('li', { textContent: 'posição e nick de cada assento;' }),
+      el('li', { textContent: 'a ordem e o verbo de cada ação (o "\'" marca all-in).' }),
+      el('li', { textContent: 'Valores e saldos a auditoria já confere pela soma e pelas cartas; marque se vir um diferente.' })]),
+    el('div', { className: 'conf-acoes' }, [
+      el('button', { className: 'btn primario', type: 'button', textContent: 'Tudo certo', onclick: () => marcarConferencia(true) }),
+      el('select', { id: 'conf-campo', 'aria-label': 'Campo errado' }, [el('option', { value: '', textContent: 'campo errado…' }),
+        ...r.campos.map(c => el('option', { value: c, textContent: c }))]),
+      el('input', { id: 'conf-obs', placeholder: 'o que está errado (opcional)', maxLength: 500, 'aria-label': 'Observação' }),
+      el('button', { className: 'btn erro', type: 'button', textContent: 'Achei erro', onclick: () => marcarConferencia(false),
+        title: 'A mão sai do estudo na hora e entra na taxa de erro' }),
+      el('button', { className: 'btn', type: 'button', textContent: 'Pular', onclick: () => consultar(),
+        title: 'Outra mão, sem marcar esta' })]),
+  ]);
+  $('conferir').replaceChildren(topo, el('div', { className: 'conf-grade' }, [
+    el('section', { className: 'card conf-print' }, [el('img', { src: `/print/${encodeURIComponent(m.png)}`, alt: `Print da mão ${m.hand_id}` })]),
+    corpo]));
+}
+
+// Hero × população no topo do Painel: onde o jeito dele jogar mais se afasta do field (só vilões).
+function cartaoLeaks(leaks) {
+  if (!leaks?.length) return null;
+  const linhas = leaks.map(l => {
+    const [fh, nh] = l.hero, [fp, np] = l.pop, dif = pct(fh, nh) - pct(fp, np), sig = Math.abs(l.z) >= 2;
+    const tr = el('tr', { className: 'clicavel' + (sig ? ' sig' : ''), tabIndex: 0, title: 'Abrir este spot no Estudo, só com as suas decisões' }, [
+      el('th', { textContent: `${l.secao} · ${l.nome}` }),
+      el('td', { className: 'num' + (nh < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(fh, nh) }, [el('b', { textContent: `${pct(fh, nh)}%` }), el('small', { textContent: ` ${nh}` })]),
+      el('td', { className: 'num', title: tituloIC(fp, np) }, [`${pct(fp, np)}%`]),
+      el('td', { className: 'num' + (sig ? ' neutro' : '') }, [`${dif > 0 ? '+' : ''}${dif} pp`]),
+      el('td', { className: 'num z', title: '|z| ≥ 2: a diferença dificilmente é acaso' }, [fmt(l.z, 1)]),
+      el('td', { className: 'num', title: 'lucro médio por decisão (BB), você × população' }, [l.lucro_hero === null ? '—' : `${fmt(l.lucro_hero, 1)} × ${fmt(l.lucro_pop, 1)}`]),
+      el('td', { className: 'num' }, [l.bb === null ? '—' : el('b', { className: corValor(l.bb), textContent: bb(l.bb, 0) })])]);
+    tr.onclick = tr.onkeydown = e => {
+      if (e.type !== 'click' && e.key !== 'Enter') return;
+      filtros = { ...structuredClone(l.base), hero: [1] };
+      trocarVista('estudo');
+    };
+    return tr;
+  });
+  return el('section', { className: 'card leaks' }, [
+    el('h2', {}, ['Você × população', el('small', { className: 'muted', textContent: ' as stats do painel, das que mais custam para as que mais rendem' })]),
+    el('div', { className: 'rolar' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, ['Spot', 'Você', 'População', 'Diferença', 'z', 'Lucro/decisão', 'BB no total'].map(c => el('th', { textContent: c })))]),
+      el('tbody', {}, linhas)])]),
+    el('p', { className: 'nota', textContent: 'População = só os vilões (sem você). BB no total = (seu lucro médio no spot − o da população) × suas decisões: '
+      + 'quanto o seu jeito de jogar o spot rendeu a mais ou a menos que o do field. O lucro mistura sorte de carta; as linhas apagadas têm |z| < 2 '
+      + '(a diferença de frequência pode ser acaso). Mãos com seguro/jackpot ficam fora do lucro.' })]);
+}
 
 // ------------------------------------------------------------------------- consulta e desenho
 
@@ -1039,7 +1239,7 @@ function barraQuadros() {
 }
 
 let pedido = 0;
-let vista = ['painel', 'mda', 'jogadores'].includes(lerLocal('bp.vista2')) ? lerLocal('bp.vista2') : 'estudo';
+let vista = ['painel', 'mda', 'jogadores', 'conferir'].includes(lerLocal('bp.vista2')) ? lerLocal('bp.vista2') : 'estudo';
 let filtroA = lerLocal('bp.filtroA');
 
 async function consultar() {
@@ -1051,6 +1251,7 @@ async function consultar() {
   if (vista === 'painel') return consultarPainel(meu);
   if (vista === 'mda') return consultarMda(meu);
   if (vista === 'jogadores') return consultarJogadores(meu);
+  if (vista === 'conferir') return consultarConferir(meu);
   const [r, a] = await Promise.all([
     fetch('/api/consulta', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json()),
     filtroA ? fetch('/api/consulta', { method: 'POST', body: JSON.stringify(filtroA) }).then(x => x.json()) : null]);
@@ -1075,13 +1276,16 @@ async function consultar() {
 }
 
 async function consultarPainel(meu) {
-  const r = await (await fetch('/api/painel', { method: 'POST', body: JSON.stringify(filtros) })).json();
+  const [r, leaks] = await Promise.all([
+    fetch('/api/painel', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json()),
+    fetch('/api/leaks', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json())]);
   if (meu !== pedido) return;
   document.body.classList.remove('carregando');
   if (!Array.isArray(r)) { $('painel').replaceChildren(el('p', { className: 'nota', textContent: 'Erro: ' + (r.erro ?? '') })); return; }
   const secoes = {};
   for (const s of r) (secoes[s.secao] ??= []).push(s);
   $('painel').replaceChildren(
+    ...(Array.isArray(leaks) && !filtros.hero ? [cartaoLeaks(leaks)].filter(Boolean) : []),
     el('p', { className: 'nota', style: 'padding:0', textContent: 'Stats prontas do field. Os filtros da barra de cima valem para todas. Clique numa linha para abrir o spot no Estudo.' }),
     el('div', { className: 'painel-grade' }, Object.entries(secoes).map(([secao, stats]) => el('section', { className: 'card' }, [
       el('h2', { textContent: secao }),
@@ -1108,12 +1312,10 @@ function trocarVista(v) {
   $('painel').hidden = v !== 'painel';
   $('mda').hidden = v !== 'mda';
   $('jogadores').hidden = v !== 'jogadores';
-  $('comando').hidden = v === 'mda' || v === 'jogadores';
-  $('ativos').hidden = v === 'jogadores';  // na MDA, rua/situação/linha vêm da árvore; Jogadores não filtra
-  $('aba-estudo').setAttribute('aria-selected', String(v === 'estudo'));
-  $('aba-painel').setAttribute('aria-selected', String(v === 'painel'));
-  $('aba-mda').setAttribute('aria-selected', String(v === 'mda'));
-  $('aba-jogadores').setAttribute('aria-selected', String(v === 'jogadores'));
+  $('conferir').hidden = v !== 'conferir';
+  $('comando').hidden = v === 'mda' || v === 'jogadores' || v === 'conferir';
+  $('ativos').hidden = v === 'jogadores' || v === 'conferir';  // na MDA, rua/situação/linha vêm da árvore; Jogadores tem os seus
+  for (const aba of ['estudo', 'painel', 'mda', 'jogadores', 'conferir']) $('aba-' + aba).setAttribute('aria-selected', String(v === aba));
   mudou();
 }
 
@@ -1257,6 +1459,7 @@ $('aba-estudo').onclick = () => trocarVista('estudo');
 $('aba-painel').onclick = () => trocarVista('painel');
 $('aba-mda').onclick = () => trocarVista('mda');
 $('aba-jogadores').onclick = () => trocarVista('jogadores');
+$('aba-conferir').onclick = () => trocarVista('conferir');
 
 // ------------------------------------------------------------------------- início
 
@@ -1264,6 +1467,7 @@ $('aba-jogadores').onclick = () => trocarVista('jogadores');
   opcoes = await (await fetch('/api/opcoes')).json();
   ORDEM.push(...opcoes.forcas, ...opcoes.draws, 'todos foldam', 'pago', 'aumentado');
   $('info').textContent = `${opcoes.maos.toLocaleString('pt-BR')} bomb pots`;
+  desenharSelo(opcoes.saude);
   try { filtros = location.hash.length > 1 ? JSON.parse(decodeURIComponent(location.hash.slice(1))) : {}; } catch { filtros = {}; }
   // filtro antigo de jogadores em mín/máx vira a lista que a barra de comando usa
   const j = filtros.n_jogadores;

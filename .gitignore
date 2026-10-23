@@ -1,10 +1,12 @@
 # dados: ficam so na maquina (repositorio publico; as imagens passam de 2 GB)
-bombpot.db
-bombpot.db-journal
+*.db
+*.db-*
+refazer_*.txt
 entrada/
 processadas/
 recusadas/
 hh/
+hh_novo/
 dados_wpt/
 *.log
 
@@ -12,3 +14,4 @@ dados_wpt/
 __pycache__/
 .pytest_cache/
 .playwright-mcp/
+conferencias_bombpot.json

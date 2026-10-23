@@ -52,6 +52,42 @@ def test_aposta_allin_escrita_como_raise_vira_bet():
     assert (d[18], d[11], d[20]) == ("Bet", "livre", 1)  # acao, situacao, allin
 
 
+def test_call_zero_sem_aposta_vira_check():  # ID_1318375308628545536: "Call $0.00" no turn e no river
+    jog = {p: {"stack": 100, "cartas": None, "hero": 0, "ordem": i} for i, p in enumerate(("UTG", "HJ"), 1)}
+    acoes = [("flop", "UTG", "Check", None, 0, 64.0), ("flop", "HJ", "Check", None, 0, 64.0),
+             ("turn", "UTG", "Call", 0.0, 0, 64.0), ("turn", "HJ", "Bet", 10.0, 0, 64.0)]
+    d = decisoes.linhas_da_mao("x", 2, 64.0, "", acoes, jog, False)
+    assert (d[2][18], d[2][11], d[3][11]) == ("Check", "livre", "livre")  # e o HJ continua apostando "livre"
+
+
+def test_mao_marcada_nao_usa_o_saldo_da_tela():  # o saldo com seguro/jackpot nao e o do poker
+    jog = {p: {"stack": 100, "cartas": None, "hero": 0, "ordem": i, "net": n}
+           for i, (p, n) in enumerate((("SB", 50.0), ("BTN", -50.0)), 1)}
+    acoes = [("flop", "SB", "Bet", 42.0, 0, 16.0), ("flop", "BTN", "Call", 42.0, 0, 58.0)]
+    for d in decisoes.linhas_da_mao("x", 2, 16.0, "", acoes, jog, True):
+        col = dict(zip(decisoes.COLUNAS, d))
+        assert (col["lucro"], col["spr"], col["ganhou"], col["marcada"]) == (None, None, None, 1)
+
+
+def test_site_refaz_as_derivadas_quando_outra_conexao_grava(tmp_path):
+    """O refazer/aceitar e o `nomes` mudam maos sem mudar a contagem: o site contava so as maos e ficava velho."""
+    banco = tmp_path / "t.db"
+    con = tracker.abrir(banco)
+    tracker.gravar_linhas(con, *tracker.linhas(tracker.build(GABARITO, usar_armario=False, gravar=False), "g.png"))
+    con.commit()
+    site = servidor.Handler.__new__(servidor.Handler)  # so o atualizar(), sem servidor de verdade
+    site.con = con
+    servidor.Handler.versao_vista = -1
+    site.atualizar()
+    antes = con.execute("SELECT count(*) FROM decisoes").fetchone()[0]
+    outra = tracker.abrir(banco)  # o terminal, com o site aberto
+    outra.execute("DELETE FROM acoes WHERE ordem >= 10")
+    outra.commit()
+    site.atualizar()
+    assert con.execute("SELECT count(*) FROM decisoes").fetchone()[0] == 10 < antes
+    assert con.execute("SELECT count(*) FROM hands").fetchone() == (1,)  # a mesma contagem de maos
+
+
 def test_consulta_soma_e_faixas(con):
     r = servidor.consultar(con, {"rua": ["flop"], "situacao": ["enfrenta aposta"]})
     # Hero e populacao juntos: BTN, SB, BB, UTG foldam e o UTG+1 da raise (o HJ/Hero nao enfrentou so a aposta)

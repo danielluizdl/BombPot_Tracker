@@ -208,6 +208,8 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
                 continue
             if verbo == "Raise" and maior == 0:  # o WPT escreve a aposta all-in como "Raise"
                 verbo = "Bet"
+            if verbo == "Call" and maior == 0 and not valor:  # "Call $0.00" sem aposta na mesa e check
+                verbo = "Check"                              # (ID_1318375308628545536, turn e river)
             por_menos = verbo == "Raise" and (valor or 0) <= maior  # all-in menor que a bet: e call, mas vem "Raise"
             if por_menos:
                 verbo = "Call"
@@ -290,11 +292,15 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
         net = jog[linha[3]].get("net")
         linha.append(None if marcada or net is None else round(net + gasto, 2))
         linha.append(int(showdown and linha[3] in vivos))
-        linha.append(None if net is None else int(net > 0))
+        linha.append(None if marcada or net is None else int(net > 0))  # o saldo da mao marcada traz seguro/jackpot
         linha.extend(antes)
         linha.append(atual_antes[i])
         linha.extend(resposta_extra.get(i, (None, None)))
     return [tuple(linha) for linha in saida]
+
+
+# mao em que o dono achou erro conferindo o print fica fora do estudo (mao errada e pior que mao ausente)
+SEM_ERRO = " WHERE id NOT IN (SELECT hand_id FROM conferencias WHERE ok = 0)"
 
 
 def reconstruir(con: sqlite3.Connection) -> int:
@@ -307,11 +313,11 @@ def reconstruir(con: sqlite3.Connection) -> int:
             "SELECT hand_id, pos, stack, net, cartas, hero, ordem_flop FROM jogadores"):
         jog[hid][pos] = {"stack": stack, "net": net, "cartas": cs, "hero": hero, "ordem": ordem}
     linhas = []
-    for hid, n, ante, board, obs in con.execute("SELECT id, n_jogadores, ante_bb, board, obs FROM hands"):
+    for hid, n, ante, board, obs in con.execute(f"SELECT id, n_jogadores, ante_bb, board, obs FROM hands{SEM_ERRO}"):
         linhas += linhas_da_mao(hid, n, ante or 0, board or "", acoes[hid], jog[hid], bool(obs))
     with con:
         con.executescript(ESQUEMA)
-        con.executemany(f"INSERT INTO decisoes VALUES ({','.join('?' * len(linhas[0]))})", linhas)
+        con.executemany(f"INSERT INTO decisoes VALUES ({','.join('?' * len(COLUNAS))})", linhas)
     return len(linhas)
 
 

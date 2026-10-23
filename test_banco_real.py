@@ -58,6 +58,8 @@ def recontagem(con):
                 verbo = "Bet"
             elif verbo == "Raise" and (valor or 0) <= maior:
                 verbo = "Call"
+            elif verbo == "Call" and not apostou and not valor:  # "Call $0.00" sem aposta: check
+                verbo = "Check"
             if verbo in ("Bet", "Raise"):
                 apostou, maior = True, valor or 0
             lista[i] = (verbo, valor, pote)
@@ -186,7 +188,7 @@ def test_fold_por_sizing_bate_com_sql_direto(con):
     f = {"rua": ["turn"], "situacao": ["enfrenta aposta"], "linha_flop": ["C", "XC"], "enf_flop": {"min": 0, "max": 0.15}}
     r = servidor.consultar(con, f)
     d = r["defesa"]
-    assert sum(v["n"] for v in d.values()) == r["geral"]["defesa"][0] == 205
+    assert sum(v["n"] for v in d.values()) == r["geral"]["defesa"][0] > 0  # 205 em 22/out; cresce com o acervo
     assert sum(v["Fold"] for v in d.values()) == r["geral"]["defesa"][1]
     n, folds = con.execute(
         "SELECT count(*), sum(acao = 'Fold') FROM decisoes WHERE rua = 'turn' AND situacao = 'enfrenta aposta' "
@@ -221,6 +223,8 @@ def _arvore_independente(con, rua_alvo, pos_filtro=None):
                     verbo = "Bet"
                 elif verbo == "Raise" and valor <= maior:
                     verbo = "Call"
+                elif verbo == "Call" and not apostou and not valor:  # "Call $0.00" sem aposta: check
+                    verbo = "Check"
                 situ = "livre" if maior == 0 else "enfrenta"
                 tam = None
                 if verbo == "Bet":
@@ -288,6 +292,20 @@ def test_mda_bate_com_recontagem_independente(con, rua, pos):
                 for campo in ("ev", "tam"):  # somas de fracoes: a recontagem arredonda o tamanho em 3 casas
                     assert s.pop(campo) == pytest.approx(d[campo], abs=0.002 * d["respondidas"] + 1e-9), (chave, acao, k)
                 assert s == {c: v for c, v in d.items() if c not in ("ev", "tam")}, (chave, acao, k)
+
+
+def test_auditoria_do_banco_real_limpa(con):
+    """Toda invariante vale em todas as maos (auditar.py). O leitor aceito so conta depois do primeiro aceitar."""
+    import auditar
+    falhas = auditar.violacoes(auditar.auditar(con))
+    assert falhas == {}, {k: v[:5] for k, v in falhas.items()}
+
+
+def test_mao_marcada_nao_entra_em_conta_de_dinheiro(con):
+    """Seguro/jackpot: o saldo da tela nao e o do poker, entao lucro, SPR e ganhou ficam vazios."""
+    assert con.execute("SELECT count(*) FROM decisoes WHERE marcada = 1 AND "
+                       "(lucro IS NOT NULL OR spr IS NOT NULL OR ganhou IS NOT NULL)").fetchone() == (0,)
+    assert con.execute("SELECT count(*) FROM decisoes WHERE marcada = 1").fetchone()[0] > 0
 
 
 def test_mda_afunilar_bate_com_sql_direto(con):

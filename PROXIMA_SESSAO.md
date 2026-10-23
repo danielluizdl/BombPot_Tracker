@@ -1,14 +1,39 @@
-# Próxima sessão: onde paramos (22/out/2026)
+# Próxima sessão: onde paramos (23/out/2026)
 
 Leia antes: `CLAUDE.md` (mapa, quirks do WPT, regras), depois este arquivo. `PROMPT.md` e `PLANO_H2N.md` são o
 histórico de decisões. O dono escreve em português, prefere que eu escolha o recomendado e siga, perguntando só
 em bifurcação real, e quer **teste real mão a mão** (conferir no print), nunca suposição.
 
+## Sessão de 23/out: estrutura + confiança dos dados (relatório da mesa gstack: claude.ai/artifact/5aw7XWs6HyzUpYZo1Ek7JN)
+
+Feito (181 testes; nada commitado ainda, o dono decide):
+- `.gitignore` cobre `*.db`, `*.db-*`, `refazer_*.txt`, `hh_novo/`, `conferencias_bombpot.json` (repo público).
+- `hands`: `versao_leitor`, `sha256`, `mtime`, `pior_rank`; `UNIQUE(png)`; registrar grava o nome FINAL do print.
+- `refazer` em banco novo + diff (`refazer_<versao>.txt`) + `aceitar` (audita, copia, troca numa transação).
+  Rodado de verdade: 1.538 iguais, 29 mudaram (texto de seguro, 2 nicks anônimos, 4 potes de Fold/Insurance),
+  **9 recuperadas** (as "replay soma": call all-in que o Replayer bdf0a4c já lê) e aceito. `REPLAYER_OK` = 28-bdf0a4c.
+  As 9 eram derrotas do dLzinN (−245,5 BB): recusar enviesava o Net para cima. Net hoje +5.242,3 BB em 1.573 mãos.
+- `auditar.py` + `python tracker.py auditar` (roda no fim do processar e antes do aceitar): banco real limpo.
+  Achou 2 quirks novos do WPT (no CLAUDE.md): "Call $0.00" = check; tela em BB erra 0,1 abaixo de 100 BB.
+- Site: `PRAGMA data_version` (o refazer/nomes não deixam mais o site velho), uma requisição por vez;
+  aba **Conferir** (sorteio mede a taxa, Clopper-Pearson; suspeitas = 15 mãos com número de carta > 0,12);
+  selo no topo; **Você × população** no Painel (stat de cartas compara só showdown); Jogadores com filtro de
+  mesa/data, BB/100 ± IC e sugestões de nick partido (50; ex. 1/I trocados) com confirmação.
+- Descartado com evidência: mexer na tolerância do Replayer (só 2 das 9 "arredondamento" eram arredondamento, e
+  as 9 já voltaram pela correção de ontem); medir o naipe pela releitura (trocava ♠ preto por ♣ em 36 mãos certas).
+
+Conferência do dono (23/out, leitor 28-bdf0a4c): **102 sorteadas + 15 suspeitas, 0 erros** -> taxa de erro da
+leitura < 2,9% (95%, Clopper-Pearson). Sorteadas por unidade: BB 38, CNY 32, USD 32; só 3 com seguro/jackpot
+(esse estrato ainda não tem taxa própria). Erro achado vira teste e a conta recomeça; leitor novo invalida a taxa.
+
+Pendente do dono: dizer a pasta do drive para `BOMBPOT_COPIA` (sem ela, `conferencias_bombpot.json` fica ao lado
+do banco); juntar os nicks sugeridos; commit.
+
 ## O projeto em uma frase
 
 Prints de bomb pot do WPT Global -> `wptparse` (do `..\Poker_Replayer`) -> SQLite (`bombpot.db`, fora do git) ->
 site local de estudo da população (`python servidor.py`, 127.0.0.1:8770; ou `Abrir site.bat`).
-Acervo hoje: 1.567 mãos (quase todas do dono, nick **dLzinN**), 1.951 jogadores com nick.
+Acervo hoje: 1.576 mãos (quase todas do dono, nick **dLzinN**), 2.030 nicks.
 
 ## O que existe no site (abas)
 
