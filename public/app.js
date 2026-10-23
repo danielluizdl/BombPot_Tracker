@@ -1139,13 +1139,18 @@ function desenharConferir() {
   const r = confDados, s = r.saude, m = r.mao;
   const segModo = el('div', { className: 'seg', role: 'group', 'aria-label': 'Modo' }, [
     ['sorteio', 'Sorteio (mede a taxa)'], ['suspeita', `Suspeitas (${s.suspeitas.length})`],
-    ['nicks', confModo === 'nicks' ? `Nicks repetidos (${r.restantes})` : 'Nicks repetidos']].map(([v, t]) => el('button', {
+    ['nicks', confModo === 'nicks' && r.restantes !== undefined ? `Nicks repetidos (${r.restantes})` : 'Nicks repetidos']].map(([v, t]) => el('button', {
     type: 'button', textContent: t, ariaPressed: String(confModo === v), onclick: () => { confModo = v; consultar(); } })));
   const placar = el('span', { className: 'placar' }, s.conferidas
     ? [el('b', { textContent: `${s.conferidas}` }), ` sorteadas conferidas · `, el('b', { textContent: `${s.erros}` }), ` com erro · taxa de erro ≤ `,
       el('b', { textContent: pctTeto(s.teto) }), ' (95%)' + (s.conferidas_total > s.conferidas ? ` · mais ${s.conferidas_total - s.conferidas} da fila de suspeitas` : '')]
     : ['Nenhuma mão sorteada conferida ainda. 100 sem erro dizem "erro < 3%"; 300, "< 1%".']);
   const topo = el('section', { className: 'card conf-topo', style: 'padding:12px 16px' }, [segModo, placar]);
+  if (confModo === 'nicks' && r.modo !== 'nicks') {  // o JS novo chegou, o Python não: o servidor precisa reiniciar
+    $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota neutro', textContent:
+      'O site está rodando uma versão antiga do servidor, que ainda não conhece este modo. Feche a janela do "Abrir site.bat" e abra de novo.' })]));
+    return;
+  }
   if (confModo === 'nicks') { $('conferir').replaceChildren(topo, ...conferirNick(r)); return; }
   if (!m) {
     $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota', textContent:
