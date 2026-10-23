@@ -147,17 +147,43 @@ td.fraca, td .fraca { opacity: .45; }
 .mda-grade { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
 @media (max-width: 1100px) { .mda-grade { grid-template-columns: 1fr; } }
 .mda-col h3 { margin: 0 0 8px; font-size: 22px; letter-spacing: .5px; } .mda-col h3 small { color: var(--accent); font-size: 12px; font-weight: 400; }
-.mda-no { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; padding: 6px 8px 8px; }
-.mda-no-cab { display: flex; gap: 6px; align-items: baseline; color: var(--bom); font-size: 12px; padding: 2px 2px 6px; }
-.mda-no-cab b { color: var(--text); } .mda-no-cab small { margin-left: auto; color: var(--muted); }
-.mda-acao { display: grid; grid-template-columns: minmax(80px, 1.2fr) 1fr 48px 46px; gap: 8px; align-items: center; width: 100%;
-  background: none; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; cursor: pointer; text-align: left; }
-.mda-acao:hover { background: var(--card-2); }
-.mda-acao.ativa { border-color: var(--accent); background: #262d14; }
-.mda-acao .rot { font-variant-numeric: tabular-nums; }
-.mda-acao b { text-align: right; } .mda-acao small { color: var(--muted); font-size: 11px; }
-.barrinha { height: 6px; background: var(--card-2); border-radius: 3px; overflow: hidden; } .barrinha i { display: block; height: 100%; }
-.mda-pequenos summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 2px 8px; }
+.mda-col { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; }
+.mda-col[open] { padding-bottom: 8px; }
+.mda-col > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; padding: 10px 8px;
+  font-size: 20px; font-weight: 700; }
+.mda-col > summary::-webkit-details-marker { display: none; }
+.mda-col > summary .seta { color: var(--muted); font-size: 12px; transition: transform .15s; transform: rotate(-90deg); }
+.mda-col[open] > summary .seta { transform: none; }
+.mda-col[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.mda-col > summary small { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: auto; }
+.mda-col > summary small.afun { color: var(--accent); margin-left: 0; }
+.mda-linha { display: grid; grid-template-columns: 1fr auto 52px; gap: 8px; align-items: baseline; width: 100%;
+  background: none; border: 0; border-bottom: 1px solid #1f232a; color: var(--text); padding: 5px 8px; cursor: pointer; text-align: left;
+  font-variant-numeric: tabular-nums; }
+.mda-linha:hover { background: var(--card-2); }
+.mda-linha.aberta { background: #262d14; box-shadow: inset 2px 0 0 var(--accent); }
+.mda-linha .rot { font-weight: 600; letter-spacing: .3px; }
+.mda-linha small { color: var(--muted); font-size: 11px; text-align: right; }
+.mda-pequenos summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 8px 8px 4px; }
+.mda-detalhe { margin-top: 14px; padding: 12px 14px; }
+.mda-busca { position: relative; }
+.mda-busca input { width: 220px; padding: 7px 10px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+  font-weight: 600; letter-spacing: .3px; }
+.mda-sugestoes { display: none; position: absolute; top: 100%; left: 0; z-index: 5; min-width: 300px; margin-top: 4px;
+  background: var(--card-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px #0008; }
+.mda-busca:focus-within .mda-sugestoes:not(:empty) { display: block; }
+.mda-sugestoes button { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; align-items: baseline; width: 100%;
+  background: none; border: 0; color: var(--text); padding: 6px 8px; border-radius: 6px; cursor: pointer; text-align: left; }
+.mda-sugestoes button:hover { background: var(--card); }
+.mda-sugestoes small { color: var(--muted); } .mda-sugestoes span { color: var(--muted); font-size: 12px; }
+.mda-sugestoes .nota { margin: 6px 8px; }
+.mda-seletores { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.mda-sel { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.mda-sel select { background: var(--card-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.mda-sel.ativo select { border-color: var(--accent); color: var(--accent); }
+.mda-detalhe-cab { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.mda-detalhe-cab h3 { margin: 0; font-size: 18px; } .mda-detalhe-cab h3 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+span.destaque { color: var(--accent); font-weight: 600; }
 b.destaque { color: var(--accent); }
 
 /* --- jogadores (cores do gráfico do MetaLens) --- */

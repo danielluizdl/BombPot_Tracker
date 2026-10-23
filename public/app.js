@@ -607,6 +607,59 @@ const FAIXAS_MDA = () => [...opcoes.faixas_h2n].reverse();  // as faixas do H2N,
 let caminho = lerLocal('bp.caminho') ?? {};
 let mdaSel = null;  // { rua, chave, acao }
 let mdaDados = null;
+const ruasAbertas = new Set();  // os três boxes começam minimizados
+let separarAI = false;          // sempre começa desligado: a bet all-in entra na faixa do tamanho dela
+let buscaLinha = '';            // a linha digitada na busca: os boxes mostram só as que começam assim
+// "x - b", "XB" e "X B" são a mesma linha: só as letras contam ("(sem bet)" fica de fora)
+const normLinha = s => s.replace(/\(.*?\)/g, '').toUpperCase().replace(/[^XBCRF]/g, '');
+const casaBusca = rotulo => !normLinha(buscaLinha) || normLinha(rotulo).startsWith(normLinha(buscaLinha));
+const linhasDaRua = rua => (mdaDados?.[rua] ?? []).flatMap(no => ACOES.filter(a => no.acoes[a]).map(a => ({ rua, no, a })));
+
+function escolherLinha({ rua, no, a }) {
+  ruasAbertas.add(rua);
+  mdaSel = { rua, chave: no.chave, acao: a };
+  buscaLinha = rotuloLinha(no, a);
+  desenharMda(true);
+}
+
+// As possibilidades que sobram para o que foi digitado, das mais jogadas para as menos.
+function sugestoesMda() {
+  if (!normLinha(buscaLinha)) return [];
+  return RUAS_MDA.flatMap(linhasDaRua).filter(l => casaBusca(rotuloLinha(l.no, l.a)))
+    .sort((x, y) => y.no.acoes[y.a] - x.no.acoes[x.a]).slice(0, 12);
+}
+function listaSugestoes() {
+  const sug = sugestoesMda();
+  return el('div', { className: 'mda-sugestoes' }, sug.length ? sug.map(l => el('button', { type: 'button',
+    onmousedown: e => { e.preventDefault(); escolherLinha(l); } }, [
+    el('small', { textContent: NOME_RUA[l.rua] }), el('b', { textContent: rotuloLinha(l.no, l.a) }),
+    el('span', { textContent: `${pct(l.no.acoes[l.a], l.no.n)}% (${l.no.acoes[l.a]})` })]))
+    : normLinha(buscaLinha) ? [el('p', { className: 'nota', textContent: 'Nenhuma linha começa assim.' })] : []);
+}
+// Ao digitar, troca só os boxes e a lista: refazer a barra inteira tiraria o foco da caixa.
+function atualizarBusca() {
+  document.querySelector('#mda .mda-grade')?.replaceWith(el('div', { className: 'mda-grade' }, RUAS_MDA.map(r => colunaMda(r, mdaDados[r]))));
+  document.querySelector('#mda .mda-sugestoes')?.replaceWith(listaSugestoes());
+}
+function caixaBusca() {
+  return el('div', { className: 'grupo-cmd mda-busca' }, [el('span', { textContent: 'Procurar linha' }),
+    el('input', { type: 'search', value: buscaLinha, placeholder: 'ex.: x b, B - B, xc', ariaLabel: 'Procurar linha', autocomplete: 'off',
+      oninput: e => { buscaLinha = e.target.value; atualizarBusca(); },
+      onkeydown: e => {
+        if (e.key === 'Enter') { const s = sugestoesMda()[0]; if (s) escolherLinha(s); }
+        if (e.key === 'Escape') { buscaLinha = ''; e.target.value = ''; atualizarBusca(); }
+      } }),
+    listaSugestoes()]);
+}
+
+// Na linha do turn ou do river: o tamanho da bet dele (ou da que ele pagou) na rua anterior vira filtro da linha.
+function escolherFaixaAnterior(rua, linha, faixa, lado) {
+  const c = { ...caminho };
+  if (faixa) c[rua] = { linha, faixa, lado }; else delete c[rua];
+  caminho = c;
+  salvarCaminho();
+  consultar();
+}
 const letrasEmPalavras = s => (s ? linhaEmPalavras(s) : '');
 
 function descreverNo(no) {
@@ -615,7 +668,9 @@ function descreverNo(no) {
   return `depois de ${letrasEmPalavras(no.atual)}, ${no.atual.endsWith('B') || no.atual.endsWith('R') ? 'levou raise' : 'enfrenta bet'}`;
 }
 // Rótulo da linha no estilo do H2N: as ruas separadas por " - ", as letras dele em cada rua.
-const rotuloLinha = (no, acao) => [...no.prefixo, no.atual + LETRA_ACAO[acao]].join(' - ');
+// o fold com a mesa em check (o WPT deixa) leva "(sem bet)": sem isso ele repetia o rótulo do fold contra bet
+const rotuloLinha = (no, acao) => [...no.prefixo, no.atual + LETRA_ACAO[acao]].join(' - ')
+  + (acao === 'Fold' && no.situ === 'livre' ? ' (sem bet)' : '');
 
 function salvarCaminho() { gravarLocal('bp.caminho', caminho); }
 function afunilar(rua, linha, faixa, lado) {
@@ -659,42 +714,68 @@ function barraMda() {
   return el('div', { className: 'mda-barra' }, [
     el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Posição' }), segPos]),
     el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Jogadores na mesa (marque vários)' }), segJog]),
+    caixaBusca(),
     el('div', { className: 'grupo-cmd caminho' }, [el('span', { textContent: 'Caminho (afunilar)' }),
       el('div', { className: 'chips' }, passos.length ? passos : [el('span', { className: 'vazio', textContent: 'clique numa ação e em "afunilar" para seguir a linha na rua seguinte' })])]),
-    el('div', { className: 'fim' }, [el('button', { className: 'btn', type: 'button', textContent: 'Mais filtros', onclick: abrirAvancado })]),
+    el('div', { className: 'fim' }, [
+      el('button', { className: 'btn' + (separarAI ? ' primario' : ''), type: 'button', ariaPressed: String(separarAI),
+        textContent: `All-in separado: ${separarAI ? 'sim' : 'não'}`,
+        title: separarAI ? 'Ligado: as bets all-in aparecem nas linhas -AI e saem da conta do tamanho delas. Clique para juntar.'
+          : 'Desligado: cada bet all-in soma na faixa do tamanho dela (a amostra de all-in costuma ser pequena). Clique para mostrar à parte.',
+        onclick: () => { separarAI = !separarAI; desenharMda(); } }),
+      el('button', { className: 'btn', type: 'button', textContent: 'Mais filtros', onclick: abrirAvancado })]),
   ]);
 }
 
+// Cada rua é um box com uma lista de linhas, como no perfil do H2N: "X - B  25%  (276)" = depois do flop em check,
+// quantas vezes ele foi o primeiro a apostar no turn. Os boxes começam minimizados; clicar numa linha abre os bet
+// sizes dela no painel embaixo dos três boxes.
 function colunaMda(rua, nos) {
-  const visiveis = nos.filter(n => n.n >= MINIMO_NO), pequenos = nos.filter(n => n.n < MINIMO_NO);
-  const cartaoNo = no => {
-    const cab = el('div', { className: 'mda-no-cab' }, [
-      no.prefixo.length ? el('b', { textContent: no.prefixo.join(' - ') + ' ›' }) : null,
-      el('span', { textContent: descreverNo(no) }), el('small', { textContent: `${no.n}` })]);
-    const linhas = ACOES.filter(a => no.acoes[a]).map(a => {
-      const n = no.acoes[a], ativo = mdaSel && mdaSel.rua === rua && mdaSel.chave === no.chave && mdaSel.acao === a;
-      return el('button', { type: 'button', className: 'mda-acao' + (ativo ? ' ativa' : ''), title: `${a}: ${tituloIC(n, no.n)} · clique para ver os tamanhos`,
-        onclick: () => { mdaSel = ativo ? null : { rua, chave: no.chave, acao: a }; desenharMda(); } }, [
-        el('span', { className: 'rot', textContent: rotuloLinha(no, a) }),
-        el('span', { className: 'barrinha' }, [el('i', { style: `width:${100 * n / no.n}%;background:${COR[a]}` })]),
-        el('b', { className: no.n < AMOSTRA_MINIMA ? 'fraca' : '', textContent: `${pct(n, no.n)}%` }), el('small', { textContent: String(n) })]);
-    });
-    return el('div', { className: 'mda-no' }, [cab, ...linhas]);
+  const todas = nos.flatMap(no => ACOES.filter(a => no.acoes[a]).map(a => ({ no, a })));
+  const linhas = todas.filter(({ no, a }) => casaBusca(rotuloLinha(no, a)));
+  const buscando = !!normLinha(buscaLinha);
+  const linha = ({ no, a }) => {
+    const n = no.acoes[a], ativa = mdaSel && mdaSel.rua === rua && mdaSel.chave === no.chave && mdaSel.acao === a;
+    return el('button', { type: 'button', className: 'mda-linha' + (ativa ? ' aberta' : ''), ariaPressed: String(!!ativa),
+      title: `${descreverNo(no)} · ${a}: ${tituloIC(n, no.n)} · clique para ${ativa ? 'fechar' : 'ver os tamanhos embaixo'}`,
+      onclick: () => { if (ativa) { mdaSel = null; desenharMda(); } else escolherLinha({ rua, no, a }); } }, [
+      el('span', { className: 'rot', textContent: rotuloLinha(no, a) }),
+      el('b', { className: no.n < AMOSTRA_MINIMA ? 'fraca' : '', textContent: `${pct(n, no.n)}%` }),
+      el('small', { textContent: `(${n})` })]);
   };
-  return el('section', { className: 'mda-col' }, [
-    el('h3', {}, [NOME_RUA[rua], rua !== 'flop' && caminho[rua === 'turn' ? 'flop' : 'turn'] ? el('small', { textContent: ' afunilado' }) : null]),
-    ...(nos.length ? visiveis.map(cartaoNo) : [el('p', { className: 'nota', textContent: 'Nenhuma decisão nesta rua com este caminho.' })]),
-    pequenos.length ? el('details', { className: 'mda-pequenos' }, [el('summary', { textContent: `mais ${pequenos.length} linhas com menos de ${MINIMO_NO} decisões` }),
-      ...pequenos.map(cartaoNo)]) : null,
+  const grandes = linhas.filter(l => l.no.n >= MINIMO_NO), pequenas = linhas.filter(l => l.no.n < MINIMO_NO);
+  const total = nos.reduce((s, no) => s + (no.atual ? 0 : no.n), 0);  // primeira decisão de cada um na rua
+  const box = el('details', { className: 'mda-col', open: ruasAbertas.has(rua) || (buscando && linhas.length > 0),
+    ontoggle: e => { if (e.target.open) ruasAbertas.add(rua); else ruasAbertas.delete(rua); } }, [
+    el('summary', {}, [el('span', { className: 'seta', textContent: '▾' }), NOME_RUA[rua],
+      rua !== 'flop' && caminho[rua === 'turn' ? 'flop' : 'turn'] ? el('small', { className: 'afun', textContent: 'afunilado' }) : null,
+      el('small', { textContent: buscando ? `${linhas.length} de ${todas.length} linhas` : `${todas.length} linhas · ${total.toLocaleString('pt-BR')} decisões de primeira ação` })]),
+    ...(linhas.length ? grandes.map(linha) : [el('p', { className: 'nota', textContent: buscando ? 'Nenhuma linha desta rua começa assim.' : 'Nenhuma decisão nesta rua com este caminho.' })]),
+    pequenas.length ? el('details', { className: 'mda-pequenos', open: buscando || pequenas.some(l => mdaSel?.rua === rua && mdaSel.chave === l.no.chave) },
+      [el('summary', { textContent: `mais ${pequenas.length} linhas de situações com menos de ${MINIMO_NO} decisões` }), ...pequenas.map(linha)]) : null,
   ]);
+  return box;
 }
 
+// Com o all-in junto (o padrão), "B50" soma "B50" e "B50|AI": a bet all-in conta no tamanho dela.
+function tamanhosDaLinha(tam) {
+  if (separarAI) return [...FAIXAS_MDA(), ...FAIXAS_MDA().map(f => f + '|AI')].filter(k => tam[k]).map(k => [k, tam[k]]);
+  const soma = (a, b) => {
+    if (!a || !b) return a || b;
+    const s = {};
+    for (const c of ['n', 'todos foldam', '1 call', '2 calls', '3+ calls', 'aumentado', 'respondidas', 'ev', 'tam']) s[c] = (a[c] ?? 0) + (b[c] ?? 0);
+    s.depois = { Fold: a.depois.Fold + b.depois.Fold, Call: a.depois.Call + b.depois.Call, Raise: a.depois.Raise + b.depois.Raise };
+    return s;
+  };
+  return FAIXAS_MDA().map(f => [f, soma(tam[f], tam[f + '|AI'])]).filter(([, d]) => d);
+}
+
+// O painel embaixo dos três boxes: bet sizes (Bet/Raise) ou a resposta por tamanho enfrentado (Fold/Call/Raise).
 function detalheMda() {
   if (!mdaSel || !mdaDados) return null;
   const no = mdaDados[mdaSel.rua].find(n => n.chave === mdaSel.chave);
   if (!no) return null;
   const acao = mdaSel.acao, rua = mdaSel.rua, seguinte = rua !== 'river';
-  const titulo = `${NOME_RUA[rua]} · ${rotuloLinha(no, acao)}`;
   const linhaAtual = no.atual + LETRA_ACAO[acao];
   const botaoAfunilar = (faixa, lado) => seguinte ? el('button', { className: 'ver', type: 'button', textContent: `afunilar → ${NOME_RUA[rua === 'flop' ? 'turn' : 'river']}`,
     title: `Mostrar o ${rua === 'flop' ? 'turn' : 'river'} só de quem fez esta linha${faixa ? ` com ${cod(faixa)}` : ''}`,
@@ -702,11 +783,8 @@ function detalheMda() {
   const corpo = el('tbody');
   let cab, nota;
   if (acao === 'Bet' || acao === 'Raise') {
-    const tam = no.tamanhos[acao] ?? {};
-    // como no H2N: do maior para o menor, primeiro sem all-in e depois os "-AI"
-    const chaves = [...FAIXAS_MDA(), ...FAIXAS_MDA().map(f => f + '|AI')].filter(k => tam[k]);
-    for (const k of chaves) {
-      const d = tam[k], [faixa, ai] = k.split('|');
+    for (const [k, d] of tamanhosDaLinha(no.tamanhos[acao] ?? {})) {
+      const [faixa, ai] = k.split('|');
       const cel = n => el('td', { className: 'num' + (d.n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(n, d.n) }, [
         el('b', { textContent: `${pct(n, d.n)}%` }), el('small', { textContent: ` ${n}` })]);
       const dep = d.depois, totalDep = dep.Fold + dep.Call + dep.Raise;
@@ -716,9 +794,9 @@ function detalheMda() {
       const fraca = d.respondidas < AMOSTRA_MINIMA ? ' fraca' : '';
       corpo.append(el('tr', {}, [
         el('th', {}, [el('span', { className: 'tam' }, [el('b', { textContent: cod(faixa) + (ai ? '-AI' : '') }), el('small', { textContent: faixa + (ai ? ' · all-in' : '') })])]),
-        el('td', { className: 'num', title: `${d.n} de ${no.n} decisões do nó` }, [el('b', { textContent: `${fmt(100 * d.n / no.n, 1)}%` }), el('small', { textContent: ` ${d.n}` })]),
+        el('td', { className: 'num', title: `${d.n} de ${no.n} decisões desta situação` }, [el('b', { textContent: `${fmt(100 * d.n / no.n, 1)}%` }), el('small', { textContent: ` ${d.n}` })]),
         el('td', { className: 'num' + fraca, title: tituloIC(d['todos foldam'], d.respondidas) }, [
-          el('b', { className: d.respondidas ? (fold >= precisa ? 'bom' : 'ruim') : '', textContent: `${fold}%` }), el('small', { textContent: ` ${d['todos foldam']}` })]),
+          el('b', { className: d.respondidas ? (fold >= precisa ? 'bom' : 'ruim') : '', textContent: d.respondidas ? `${fold}%` : '—' }), el('small', { textContent: ` ${d['todos foldam']}` })]),
         el('td', { className: 'num' + fraca, title: `bet média ${fmt(medio)} do pote: ${fmt(medio)} ÷ (1 + ${fmt(medio)})` }, [
           el('b', { textContent: d.respondidas ? `${Math.round(precisa)}%` : '—' })]),
         el('td', { className: 'num' + fraca, title: d.respondidas ? `${d.respondidas} bets com resposta` : '' }, [
@@ -729,10 +807,10 @@ function detalheMda() {
         el('td', {}, [ai ? el('span') : botaoAfunilar(faixa, 'aposta')]),
       ]));
     }
-    cab = ['Tamanho', 'Freq. no nó', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (ele)', ''];
-    nota = 'Freq. no nó = quantas vezes ele fez esta bet com este tamanho, entre todas as decisões do nó (como a coluna "Fre" do H2N). '
-      + 'As colunas seguintes dizem o que a mesa fez depois dessa bet; "-AI" = all-in. Todos foldam fica verde quando passa do "precisa foldar" '
-      + '(bet ÷ (1 + bet)); EV blefe, em % do pote: +1 pote se todos foldam, −a bet se não, como na Resposta ao sizing do Estudo. '
+    cab = ['Tamanho', 'Freq.', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (ele)', ''];
+    nota = 'Freq. = quantas vezes ele fez esta bet com este tamanho, entre todas as decisões desta situação (como a coluna "Fre" do H2N). '
+      + (separarAI ? '"-AI" = all-in, fora da conta do tamanho. ' : 'As bets all-in estão somadas na faixa do tamanho delas (botão "All-in separado" para ver à parte). ')
+      + 'Todos foldam fica verde quando passa do "precisa foldar" (bet ÷ (1 + bet)); EV blefe, em % do pote: +1 pote se todos foldam, −a bet se não. '
       + 'Afunilar segue para a rua seguinte só quem fez essa bet e não levou raise.';
   } else {
     const enf = no.enfrentado ?? {};
@@ -740,7 +818,7 @@ function detalheMda() {
       const d = enf[f], n = (d.Fold ?? 0) + (d.Call ?? 0) + (d.Raise ?? 0) + (d.Check ?? 0) + (d.Bet ?? 0);
       const cel = (x, cls = '') => el('td', { className: 'num' + (n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(x ?? 0, n) }, [
         el('b', { className: cls, textContent: `${pct(x ?? 0, n)}%` }), el('small', { textContent: ` ${x ?? 0}` })]);
-      corpo.append(el('tr', { className: acao && d[acao] ? '' : 'fraca' }, [
+      corpo.append(el('tr', {}, [
         el('th', {}, [el('span', { className: 'tam' }, [el('b', { textContent: cod(f) }), el('small', { textContent: f })])]),
         el('td', { className: 'num' }, [el('b', { textContent: String(n) })]),
         cel(d.Fold, acao === 'Fold' ? 'destaque' : ''), cel(d.Call, acao === 'Call' ? 'destaque' : ''), cel(d.Raise, acao === 'Raise' ? 'destaque' : ''),
@@ -749,22 +827,38 @@ function detalheMda() {
       ]));
     }
     cab = ['Bet enfrentada', 'Decisões', 'Fold', 'Call', 'Raise', 'Precisa foldar', ''];
-    nota = 'O que ele fez contra cada tamanho de bet, neste nó. "Precisa foldar" é o fold em que um blefe contra ele empata. '
+    nota = 'O que ele fez contra cada tamanho de bet, nesta situação. "Precisa foldar" é o fold em que um blefe contra ele empata. '
       + 'Afunilar (no call) segue para a rua seguinte só quem pagou aquele tamanho.';
   }
-  return cartao('mda-detalhe', titulo, acao === 'Bet' || acao === 'Raise' ? 'bet sizes: o tamanho e o que a mesa fez' : 'por tamanho da bet enfrentada', [
-    el('div', { className: 'controles-card' }, [botaoAfunilar(null, 'aposta'),
-      el('button', { className: 'ver', type: 'button', textContent: 'fechar', onclick: () => { mdaSel = null; desenharMda(); } })]),
+  // B - B no turn: qual foi a bet do flop? O tamanho vira filtro da linha (o mesmo "afunilar", sem sair da linha).
+  const seletores = no.prefixo.map((lin, i) => {
+    const r = RUAS_MDA[i], ult = lin.slice(-1);
+    const lado = ult === 'C' ? 'pagou' : ult === 'B' || ult === 'R' ? 'aposta' : null;
+    if (!lado) return null;
+    const atual = caminho[r]?.linha === lin ? caminho[r].faixa ?? '' : '';
+    return el('label', { className: 'mda-sel' + (atual ? ' ativo' : ''),
+      title: `Só as mãos em que ${lado === 'pagou' ? 'a bet que ele pagou' : 'a bet dele'} no ${NOME_RUA[r].toLowerCase()} foi deste tamanho` }, [
+      `${lado === 'pagou' ? 'bet que ele pagou' : 'bet dele'} no ${NOME_RUA[r].toLowerCase()} (${lin})`,
+      el('select', { onchange: e => escolherFaixaAnterior(r, lin, e.target.value, lado) }, [
+        el('option', { value: '', textContent: 'todos os tamanhos', selected: !atual }),
+        ...opcoes.faixas_h2n.map(f => el('option', { value: f, textContent: `${cod(f)} (${f})`, selected: f === atual }))])]);
+  }).filter(Boolean);
+  return el('section', { className: 'card mda-detalhe' }, [
+    seletores.length ? el('div', { className: 'mda-seletores' }, seletores) : null,
+    el('div', { className: 'mda-detalhe-cab' }, [
+      el('h3', {}, [`${NOME_RUA[rua]} · ${rotuloLinha(no, acao)}`, el('small', { textContent: ` ${descreverNo(no)} · ${pct(no.acoes[acao], no.n)}% (${no.acoes[acao]} de ${no.n})` })]),
+      el('div', {}, [botaoAfunilar(null, 'aposta'),
+        el('button', { className: 'ver', type: 'button', textContent: 'fechar', onclick: () => { mdaSel = null; desenharMda(); } })])]),
     corpo.children.length ? el('div', { className: 'rolar' }, [el('table', {}, [
       el('thead', {}, [el('tr', {}, cab.map(c => el('th', { textContent: c })))]), corpo])]) : el('p', { className: 'nota', textContent: 'Sem tamanhos para mostrar.' }),
     el('p', { className: 'nota', textContent: nota })]);
 }
 
-function desenharMda() {
+function desenharMda(rolar = false) {
   if (!mdaDados) return;
   const detalhe = detalheMda();
   $('mda').replaceChildren(barraMda(), el('div', { className: 'mda-grade' }, RUAS_MDA.map(r => colunaMda(r, mdaDados[r]))), ...(detalhe ? [detalhe] : []));
-  if (detalhe) detalhe.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (detalhe && rolar) detalhe.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 async function consultarMda(meu) {
