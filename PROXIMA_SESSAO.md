@@ -26,8 +26,12 @@ Conferência do dono (23/out, leitor 28-bdf0a4c): **102 sorteadas + 15 suspeitas
 leitura < 2,9% (95%, Clopper-Pearson). Sorteadas por unidade: BB 38, CNY 32, USD 32; só 3 com seguro/jackpot
 (esse estrato ainda não tem taxa própria). Erro achado vira teste e a conta recomeça; leitor novo invalida a taxa.
 
-Pendente do dono: dizer a pasta do drive para `BOMBPOT_COPIA` (sem ela, `conferencias_bombpot.json` fica ao lado
-do banco); juntar os nicks sugeridos; commit.
+Backup das conferências: Google Drive do dono, pasta privada "BombPot Tracker - backup das conferências"
+(`conferencias_bombpot_2026-10-23.csv`: hand_id, veredito, modo, leitor). Esta máquina não tem o Google Drive
+sincronizado, então a cópia automática (`conferencias_bombpot.json`) fica ao lado do banco: depois de conferir
+mais mãos, subir um CSV novo para essa pasta (ou instalar o Google Drive para desktop e apontar `BOMBPOT_COPIA`).
+
+Pendente do dono: juntar os nicks sugeridos na aba Jogadores.
 
 ## O projeto em uma frase
 
