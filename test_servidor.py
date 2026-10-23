@@ -164,6 +164,54 @@ def test_conferir_nicks_mostra_o_par_com_parecer_e_avanca(con, tmp_path):
     assert con.execute("SELECT junta FROM aliases WHERE a = ? AND b = ?", (par["a"], par["b"])).fetchone() == (1,)
 
 
+def test_replayer_do_gabarito(con):
+    """ID_1311804268404871168 conferida no print: CO aposta 21,5, UTG+1 aumenta para 75, CO vai all-in 96,7 e o UTG+1
+    paga 21,7 (o complemento). Dividem o pote com 8-6; o board corre turn e river sem ação."""
+    r = servidor.mao(con, {"hand_id": "1311804268404871168"})
+    q = r["quadros"]
+    assert [f["texto"] for f in q if f["ator"] is None] == ["FLOP", "TURN", "RIVER", "SHOWDOWN"]
+    assert q[0]["pote"] == 64 and q[0]["board"] == ["2s", "9s", "7d"] and q[-2]["board"] == ["2s", "9s", "7d", "Kd", "2c"]
+    assert q[-1]["pote"] == pytest.approx(257.4)
+    call = next(f for f in q if f["ator"] == "UTG+1" and f["texto"].startswith("CALL"))
+    assert call["texto"] == "CALL 96.7" and call["odds"] == pytest.approx(8.4, abs=0.1)  # paga 21,7 num pote de 257,4
+    co = next(s for s in q[-1]["assentos"] if s["pos"] == "CO")
+    assert co["stack"] == pytest.approx(106 - 8 - 96.7) and co["cartas"] == "8h 6c"
+    flop = {s["pos"]: s for s in q[0]["assentos"]}
+    assert flop["HJ"]["cartas"] == "Kc 10h" and flop["CO"]["cartas"] is None  # só o Hero antes do showdown
+    assert q[-1]["resultado"]["CO"] == 23.0
+
+
+def test_quadros_normalizam_os_quirks_do_wpt():
+    jog = {p: {"stack": 100, "cartas": None, "nome": p, "seat": i, "hero": int(i == 0), "net": 0}
+           for i, p in enumerate(("SB", "BTN"))}
+    q = servidor.quadros(2, 16.0, "2s 3d 4h", [("flop", "SB", "Call", 0.0, 0), ("flop", "BTN", "Raise", 92.0, 1),
+                                            ("flop", "SB", "Raise", 40.0, 1)], jog)
+    textos = [f["texto"] for f in q]
+    assert textos[1:4] == ["CHECK", "BET 92 (all-in)", "CALL 40 (all-in)"]  # Call 0 = check; Raise sem bet = Bet;
+    assert q[3]["pote"] == 16 + 92 + 40                                     # "Raise" all-in por menos = call do total
+
+
+def test_ver_maos_pagina_de_10_em_10_e_todas(con):
+    todas = servidor.maos(con, {"filtros": {}, "limite": 0})
+    n = con.execute("SELECT count(*) FROM decisoes").fetchone()[0]
+    assert todas["total"] == n == len(todas["maos"])
+    p1 = servidor.maos(con, {"filtros": {}, "limite": 10})
+    p2 = servidor.maos(con, {"filtros": {}, "limite": 10, "offset": 10})
+    assert [m["ordem"] for m in p1["maos"] + p2["maos"]] == [m["ordem"] for m in todas["maos"][:20]]
+    assert all(m["linha"] and m["png"] for m in p1["maos"])
+    so_fold = servidor.maos(con, {"filtros": {"acao": ["Fold"]}, "limite": 0})
+    assert {m["acao"] for m in so_fold["maos"]} == {"Fold"} and so_fold["total"] < n
+
+
+def test_ver_maos_de_um_no_da_mda(con):
+    arvore = servidor.mda(con, {"filtros": {}, "caminho": {}})["flop"]
+    no = next(x for x in arvore if x["situ"] == "enfrenta" and x["acoes"].get("Fold"))
+    r = servidor.maos(con, {"filtros": {}, "limite": 0, "mda": {"rua": "flop", "prefixo": no["prefixo"],
+                                                                "atual": no["atual"], "situ": no["situ"], "acao": "Fold"}})
+    assert r["total"] == no["acoes"]["Fold"] == len(r["maos"])
+    assert {(m["rua"], m["acao"]) for m in r["maos"]} == {("flop", "Fold")}
+
+
 def test_principais_seguem_a_cadeia(con):
     con.executemany("INSERT INTO aliases VALUES (?,?,1)", [("a", "b"), ("b", "c"), ("x", "y")])
     con.execute("INSERT INTO aliases VALUES ('y', 'x', 1)")  # ciclo nao trava

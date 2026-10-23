@@ -289,6 +289,64 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 .conf-acoes select, .conf-acoes input { min-height: 34px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .btn.erro { border-color: var(--ruim); color: var(--ruim); }
 .nicks-prints { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+
+/* --- ver mãos: uma decisão por linha, como a lista de mãos do H2N --- */
+.ver-maos { display: flex; flex-direction: column; gap: 10px; }
+.ver-maos.carregando-maos { opacity: .55; }
+.lista-maos { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+.linha-mao { display: grid; grid-template-columns: 34px minmax(90px, 150px) 62px minmax(0, 1fr) 82px 84px; gap: 10px; align-items: center;
+  padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; min-width: 760px; }
+.linha-mao:last-child { border-bottom: 0; }
+.linha-mao:hover { background: var(--card-2); }
+.linha-mao .play { border: 1px solid var(--line-2); background: var(--card-2); color: var(--accent); border-radius: 6px; width: 30px; height: 28px; cursor: pointer; }
+.linha-mao .play:hover { border-color: var(--accent); }
+.linha-mao .quem { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.linha-mao .quem b { color: var(--accent); }
+.linha-mao .ruas { display: flex; gap: 14px; flex-wrap: wrap; }
+.seg-mao { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.seg-mao small { color: var(--muted); }
+.seg-mao .ac { color: var(--muted); font-family: Consolas, monospace; font-size: 12px; }
+.seg-mao .ac.agr { color: var(--b); }
+.seg-mao .ac.eu { color: var(--text); font-weight: 700; background: #262d14; border-radius: 3px; padding: 0 3px; }
+.pc { display: inline-block; min-width: 22px; padding: 1px 3px; border-radius: 3px; background: #f1f1ee; color: #1b1e16;
+  font: 700 12px Consolas, monospace; text-align: center; }
+.pc.n-h, .pc.n-d { color: #c62828; } .pc.n-c { color: #1f7a3a; }
+.maos-rodape { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mda-maos { padding: 0 16px 14px; display: flex; flex-direction: column; gap: 8px; }
+.mda-maos h4 { margin: 4px 0 0; font-size: 13px; }
+
+/* --- replayer (pop-up) --- */
+.rp-fundo { position: fixed; inset: 0; background: rgba(0, 0, 0, .66); z-index: 50; display: flex; align-items: center; justify-content: center;
+  padding: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) 12px max(12px, env(safe-area-inset-left, 0px)); }
+.rp-caixa { background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; width: min(1180px, 100%); max-height: 100%; overflow: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+.rp-cab, .rp-ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rp-dir { margin-left: auto; display: flex; gap: 8px; }
+.rp-corpo { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.rp-corpo.com-print { grid-template-columns: minmax(0, 1fr) minmax(240px, 360px); }
+@media (max-width: 900px) { .rp-corpo.com-print { grid-template-columns: 1fr; } }
+.rp-print { max-height: 70vh; overflow: auto; border-radius: 8px; background: #000; }
+.rp-print img { width: 100%; display: block; }
+.rp-mesa { position: relative; height: 470px; margin: 30px 70px 40px; }
+.rp-feltro { position: absolute; inset: 50px 90px; border-radius: 180px; border: 9px solid #3d2e1e;
+  background: radial-gradient(ellipse at center, #2f6a3c 0%, #1f4a2a 75%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+.rp-board { display: flex; gap: 5px; min-height: 34px; }
+.rp-board .pc { font-size: 17px; min-width: 32px; padding: 5px 4px; }
+.rp-pote { font-weight: 700; color: #f3e6b3; }
+.rp-odds { font-size: 12px; color: #cfe3d3; }
+.rp-assento { position: absolute; transform: translate(-50%, -50%); width: 128px; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.rp-cartas { display: flex; gap: 3px; min-height: 24px; }
+.rp-placa { background: var(--card-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 6px; width: 100%; text-align: center;
+  display: flex; flex-direction: column; font-size: 12px; }
+.rp-placa b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-placa small { color: var(--muted); }
+.rp-assento.vez .rp-placa { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.rp-assento.foco .rp-placa small { color: var(--accent); font-weight: 600; }
+.rp-assento.foldou { opacity: .4; }
+.rp-fala { background: var(--accent); color: var(--accent-ink); font: 700 11px Consolas, monospace; border-radius: 5px; padding: 2px 6px; white-space: nowrap; }
+.rp-aposta { font: 600 12px Consolas, monospace; color: #f3e6b3; }
+.rp-res { font: 700 12px Consolas, monospace; }
+@media (max-width: 760px) { .rp-mesa { height: 380px; margin: 26px 6px 34px; } .rp-feltro { inset: 46px 30px; } .rp-assento { width: 92px; } }
 @media (max-width: 900px) { .nicks-prints { grid-template-columns: 1fr; } }
 
 /* --- hero x população, sugestões de nick --- */

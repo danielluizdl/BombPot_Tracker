@@ -805,7 +805,8 @@ function detalheMda() {
         el('td', { className: 'num', title: 'Quando levou raise, o que ele fez depois' }, [totalDep
           ? `F ${pct(dep.Fold, totalDep)}% · C ${pct(dep.Call, totalDep)}% · R ${pct(dep.Raise, totalDep)}%` : '—']),
         // faixa feita só de bets all-in (somadas pelo "all-in junto"): ninguém aposta no turn depois, afunilar daria vazio
-      el('td', {}, [ai || (!separarAI && !(no.tamanhos[acao] ?? {})[faixa]) ? el('span') : botaoAfunilar(faixa, 'aposta')]),
+      el('td', {}, [ai || (!separarAI && !(no.tamanhos[acao] ?? {})[faixa]) ? el('span') : botaoAfunilar(faixa, 'aposta'),
+        el('button', { className: 'ver', type: 'button', textContent: 'mãos', title: `As mãos com ${cod(faixa)}${ai ? ' all-in' : ''}`, onclick: () => verMaosMda(k) })]),
       ]));
     }
     cab = ['Tamanho', 'Freq.', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (ele)', ''];
@@ -824,7 +825,8 @@ function detalheMda() {
         el('td', { className: 'num' }, [el('b', { textContent: String(n) })]),
         cel(d.Fold, acao === 'Fold' ? 'destaque' : ''), cel(d.Call, acao === 'Call' ? 'destaque' : ''), cel(d.Raise, acao === 'Raise' ? 'destaque' : ''),
         el('td', { className: 'num', title: 'média, mão a mão, de bet ÷ (1 + bet)' }, [`${pct(d.precisa, n)}%`]),
-        el('td', {}, [acao === 'Call' && d.Call ? botaoAfunilar(f, 'pagou') : el('span')]),
+        el('td', {}, [acao === 'Call' && d.Call ? botaoAfunilar(f, 'pagou') : el('span'),
+          el('button', { className: 'ver', type: 'button', textContent: 'mãos', title: `As mãos contra ${cod(f)}`, onclick: () => verMaosMda(f) })]),
       ]));
     }
     cab = ['Bet enfrentada', 'Decisões', 'Fold', 'Call', 'Raise', 'Precisa foldar', ''];
@@ -848,11 +850,26 @@ function detalheMda() {
     seletores.length ? el('div', { className: 'mda-seletores' }, seletores) : null,
     el('div', { className: 'mda-detalhe-cab' }, [
       el('h3', {}, [`${NOME_RUA[rua]} · ${rotuloLinha(no, acao)}`, el('small', { textContent: ` ${descreverNo(no)} · ${pct(no.acoes[acao], no.n)}% (${no.acoes[acao]} de ${no.n})` })]),
-      el('div', {}, [botaoAfunilar(null, 'aposta'),
+      el('div', {}, [el('button', { className: 'ver', type: 'button', textContent: 'ver mãos', title: 'As mãos desta linha (todos os tamanhos)',
+        onclick: () => verMaosMda(null) }), botaoAfunilar(null, 'aposta'),
         el('button', { className: 'ver', type: 'button', textContent: 'fechar', onclick: () => { mdaSel = null; desenharMda(); } })])]),
     corpo.children.length ? el('div', { className: 'rolar' }, [el('table', {}, [
       el('thead', {}, [el('tr', {}, cab.map(c => el('th', { textContent: c })))]), corpo])]) : el('p', { className: 'nota', textContent: 'Sem tamanhos para mostrar.' }),
-    el('p', { className: 'nota', textContent: nota })]);
+    el('p', { className: 'nota', textContent: nota }),
+    el('div', { id: 'mda-maos', className: 'mda-maos' })]);
+}
+
+// As mãos da linha aberta embaixo dos boxes (todos os tamanhos, ou só uma faixa da tabela), com o replayer.
+function verMaosMda(faixa) {
+  const no = mdaDados?.[mdaSel?.rua]?.find(n => n.chave === mdaSel.chave);
+  const alvo = $('mda-maos');
+  if (!no || !alvo) return;
+  const [nome, ai] = String(faixa ?? '').split('|');
+  alvo.replaceChildren(
+    el('h4', { textContent: `Mãos · ${NOME_RUA[mdaSel.rua]} · ${rotuloLinha(no, mdaSel.acao)}${faixa ? ` · ${cod(nome)}${ai ? ' all-in' : ''}` : ''}` }),
+    painelMaos({ filtros, mda: { rua: mdaSel.rua, prefixo: no.prefixo, atual: no.atual, situ: no.situ, acao: mdaSel.acao,
+      caminho, faixa, separar_ai: separarAI } }, '', true));
+  alvo.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function desenharMda(rolar = false) {
@@ -1262,6 +1279,128 @@ function cartaoLeaks(leaks) {
       + '(a diferença de frequência pode ser acaso). Mãos com seguro/jackpot ficam fora do lucro.' })]);
 }
 
+// ------------------------------------------------------------------------- Ver mãos + replayer
+// "Ver mãos" do filtro (Estudo) ou da linha da MDA: 10 por vez, "mais 10" ou "ver todas"; uma decisão por linha, no
+// resumo do H2N (cartas dele, board e pote por rua, as ações); o ▶ abre a mesa num pop-up, ação por ação.
+
+const NAIPE = { c: '♣', d: '♦', h: '♥', s: '♠' };
+const cartaEl = c => el('span', { className: `pc n-${c.slice(-1)}`, textContent: `${c.slice(0, -1).replace('10', 'T')}${NAIPE[c.slice(-1)] ?? ''}` });
+const cartasEl = txt => (txt ?? '').split(' ').filter(Boolean).map(cartaEl);
+const POR_PAGINA = 10;
+
+function painelMaos(corpo, rotulo = 'Ver mãos', ja = false) {
+  const caixa = el('div', { className: 'ver-maos' });
+  let carregadas = [], total = null;
+  const buscar = async limite => {
+    caixa.classList.add('carregando-maos');
+    const r = await (await fetch('/api/maos', { method: 'POST', body: JSON.stringify({ ...corpo, offset: carregadas.length, limite }) })).json();
+    caixa.classList.remove('carregando-maos');
+    if (r.erro) { caixa.replaceChildren(el('p', { className: 'nota ruim', textContent: 'Erro: ' + r.erro })); return; }
+    carregadas = carregadas.concat(r.maos);
+    total = r.total;
+    desenhar(r.max_todas);
+  };
+  const desenhar = maxTodas => {
+    const falta = total - carregadas.length;
+    caixa.replaceChildren(
+      el('div', { className: 'lista-maos' }, carregadas.map((m, i) => linhaMao(m, () => abrirReplayer(carregadas, i)))),
+      el('div', { className: 'maos-rodape' }, [
+        el('span', { className: 'nota', style: 'padding:0', textContent: `${carregadas.length} de ${total.toLocaleString('pt-BR')} ${total === 1 ? 'decisão' : 'decisões'} · ▶ abre a mesa` }),
+        falta > 0 ? el('button', { className: 'btn', type: 'button', textContent: `mais ${Math.min(POR_PAGINA, falta)}`, onclick: () => buscar(POR_PAGINA) }) : null,
+        falta > 0 ? el('button', { className: 'btn', type: 'button', textContent: total > maxTodas ? `ver as ${maxTodas.toLocaleString('pt-BR')} mais recentes` : `ver todas (${total.toLocaleString('pt-BR')})`,
+          onclick: () => buscar(0) }) : null]));
+  };
+  if (ja) buscar(POR_PAGINA);
+  else caixa.append(el('button', { className: 'btn primario', type: 'button', textContent: rotulo, onclick: () => buscar(POR_PAGINA) }));
+  return caixa;
+}
+
+function linhaMao(m, tocar) {
+  const ruas = m.linha.map(([rua, board, pote, acoes]) => el('span', { className: 'seg-mao' }, [
+    ...cartasEl(board), el('small', { textContent: `(${fmt(pote, 1)})` }),
+    ...acoes.map(([pos, a]) => el('span', { className: 'ac' + (pos === m.pos ? ' eu' : '') + (/^[BR]/.test(a) ? ' agr' : ''),
+      title: pos, textContent: pos === m.pos ? a : `${pos} ${a}` }))]));
+  return el('div', { className: 'linha-mao' }, [
+    el('button', { className: 'play', type: 'button', textContent: '▶', title: 'reproduzir a mão', ariaLabel: `reproduzir a mão ${m.hand_id}`, onclick: tocar }),
+    el('span', { className: 'quem', title: m.nome ?? '' }, [el('b', { textContent: m.pos }), ` ${m.nome ?? ''}`]),
+    el('span', { className: 'mao-cartas' }, m.cartas ? cartasEl(m.cartas) : [el('span', { className: 'muted', textContent: '—' })]),
+    el('span', { className: 'ruas' }, ruas),
+    el('span', { className: 'num ' + (m.lucro == null ? '' : corValor(m.lucro)), title: 'BB ganhos a partir desta decisão (vazio em mão com seguro/jackpot)',
+      textContent: m.lucro == null ? '—' : bb(m.lucro) }),
+    el('span', { className: 'muted', textContent: m.data ?? '' })]);
+}
+
+async function abrirReplayer(lista, inicio) {
+  document.getElementById('replayer')?.remove();
+  let i = inicio, dados = null, k = 0, verPrint = false;
+  const fundo = el('div', { id: 'replayer', className: 'rp-fundo', role: 'dialog', ariaModal: 'true', ariaLabel: 'replayer da mão' });
+  const caixa = el('div', { className: 'rp-caixa' });
+  fundo.append(caixa);
+  const fechar = () => { fundo.remove(); document.removeEventListener('keydown', teclas); };
+  fundo.addEventListener('click', e => { if (e.target === fundo) fechar(); });
+  const teclas = e => {
+    if (e.key === 'Escape') fechar(); else if (e.key === 'ArrowRight') passo(1); else if (e.key === 'ArrowLeft') passo(-1);
+    else if (e.key === 'ArrowUp') { e.preventDefault(); outra(-1); } else if (e.key === 'ArrowDown') { e.preventDefault(); outra(1); }
+  };
+  const passo = d => { if (!dados) return; k = Math.max(0, Math.min(dados.quadros.length - 1, k + d)); desenhar(); };
+  const rua = r => { const j = dados.quadros.findIndex(f => f.rua === r); if (j >= 0) { k = j; desenhar(); } };
+  const outra = async d => { const n = i + d; if (n < 0 || n >= lista.length) return; i = n; await carregar(); };
+  const carregar = async () => {
+    caixa.replaceChildren(el('p', { className: 'nota', textContent: 'carregando a mão…' }));
+    const m = lista[i];
+    dados = await (await fetch('/api/mao', { method: 'POST', body: JSON.stringify({ hand_id: m.hand_id }) })).json();
+    if (dados.erro) { caixa.replaceChildren(el('p', { className: 'nota ruim', textContent: 'Erro: ' + dados.erro })); return; }
+    // começa na rua da decisão filtrada, na vez de quem decidiu
+    const j = dados.quadros.findIndex(f => f.rua === m.rua && f.ator === m.pos);
+    k = j >= 0 ? j : 0;
+    desenhar();
+  };
+  function desenhar() {
+    const f = dados.quadros[k], m = lista[i];
+    const mesa = el('div', { className: 'rp-mesa' }, [
+      el('div', { className: 'rp-feltro' }, [
+        el('div', { className: 'rp-board' }, f.board.map(cartaEl)),
+        el('div', { className: 'rp-pote num', textContent: `Pote: ${fmt(f.pote, 2)} BB` }),
+        f.odds != null ? el('div', { className: 'rp-odds', textContent: `pot odds ${fmt(f.odds, 1)}%` }) : null]),
+      ...f.assentos.map(s => {
+        const [x, y] = LUGARES[((s.seat ?? 0) % 8 + 8) % 8];
+        const res = f.resultado?.[s.pos];
+        return el('div', { className: 'rp-assento' + (s.foldou ? ' foldou' : '') + (f.ator === s.pos ? ' vez' : '') + (s.pos === m.pos ? ' foco' : ''),
+          style: `left:${x}%;top:${y}%` }, [
+          el('div', { className: 'rp-cartas' }, s.cartas ? cartasEl(s.cartas) : []),
+          el('div', { className: 'rp-placa' }, [el('b', { textContent: s.nome }), el('span', { className: 'num', textContent: `${fmt(s.stack, 2)} BB` }),
+            el('small', { textContent: s.pos + (s.hero ? ' · Hero' : '') })]),
+          f.ator === s.pos ? el('div', { className: 'rp-fala', textContent: f.texto }) : null,
+          s.aposta ? el('div', { className: 'rp-aposta num', textContent: fmt(s.aposta, 2) }) : null,
+          res != null ? el('div', { className: 'rp-res num ' + corValor(res), textContent: bb(res) }) : null]);
+      })]);
+    const ruas = ['flop', 'turn', 'river'];
+    caixa.replaceChildren(
+      el('div', { className: 'rp-cab' }, [
+        el('b', { textContent: `HAND ID ${dados.hand_id}` }),
+        el('span', { className: 'muted', textContent: ` · ${dados.data ?? ''} · mão ${i + 1} de ${lista.length} · ${f.ator ? '' : f.texto}` }),
+        dados.obs ? el('span', { className: 'neutro', title: dados.obs, textContent: ' · seguro/jackpot' }) : null,
+        el('span', { className: 'rp-dir' }, [
+          el('button', { className: 'btn' + (verPrint ? ' primario' : ''), type: 'button', textContent: verPrint ? 'Esconder o print' : 'Ver o print',
+            onclick: () => { verPrint = !verPrint; desenhar(); } }),
+          el('button', { className: 'btn', type: 'button', textContent: '✕', ariaLabel: 'fechar', onclick: fechar })])]),
+      el('div', { className: 'rp-corpo' + (verPrint ? ' com-print' : '') }, [mesa,
+        verPrint ? el('div', { className: 'rp-print' }, [el('img', { src: `/print/${encodeURIComponent(dados.png)}`, alt: `Print da mão ${dados.hand_id}` })]) : null]),
+      el('div', { className: 'rp-ctl' }, [
+        el('button', { className: 'btn', type: 'button', textContent: '◀', title: 'ação anterior (←)', disabled: k === 0, onclick: () => passo(-1) }),
+        el('button', { className: 'btn', type: 'button', textContent: '▶', title: 'próxima ação (→)', disabled: k === dados.quadros.length - 1, onclick: () => passo(1) }),
+        el('div', { className: 'seg' }, ruas.map(r => el('button', { type: 'button', textContent: NOME_RUA[r], ariaPressed: String(f.rua === r),
+          disabled: !dados.quadros.some(q => q.rua === r), onclick: () => rua(r) }))),
+        el('button', { className: 'btn', type: 'button', textContent: 'fim', onclick: () => { k = dados.quadros.length - 1; desenhar(); } }),
+        el('span', { className: 'rp-dir' }, [
+          el('button', { className: 'btn', type: 'button', textContent: '▲ mão anterior', disabled: i === 0, onclick: () => outra(-1) }),
+          el('button', { className: 'btn', type: 'button', textContent: 'próxima mão ▼', disabled: i === lista.length - 1, onclick: () => outra(1) })])]));
+  }
+  document.addEventListener('keydown', teclas);
+  document.body.append(fundo);
+  await carregar();
+}
+
 // ------------------------------------------------------------------------- consulta e desenho
 
 function quadrosDeSizing(r) {
@@ -1315,6 +1454,8 @@ async function consultar() {
       cartaoDistribuicao('forca', 'Força da mão', 'categorias do H2N, nesta rua', r.forca, opcoes.forcas,
         'Só aparece quem tem cartas conhecidas: o Hero e quem mostrou no showdown (puxa para mãos fortes).'),
       cartaoDistribuicao('draws', 'Draws', 'flop e turn, entre as decisões com draw', r.draw, opcoes.draws)]),
+    cartao('maos', 'Mãos', 'as decisões deste filtro, da mais nova para a mais velha; ▶ reproduz a mesa',
+      [el('div', { style: 'padding:12px 16px' }, [painelMaos({ filtros }, `Ver mãos (${r.geral.n.toLocaleString('pt-BR')} decisões)`)])]),
   );
 }
 

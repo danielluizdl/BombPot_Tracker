@@ -211,17 +211,6 @@ def consultar(con: sqlite3.Connection, filtros: dict) -> dict:
     geral = metricas(con, w, p, "'Geral'").get("Geral")
     expr = expressao(filtros["_agrupar"]) if isinstance(filtros.get("_agrupar"), str) else None
     grupos = list(metricas(con, w, p, expr).values()) if expr else []
-    maos: list[dict] = [dict(zip(("hand_id", "png", "rua", "pos", "hero", "situacao", "acao", "tamanho", "allin", "forca",
-                      "cartas", "data", "faixa"), r))
-            for r in con.execute(
-                "SELECT d.hand_id, h.png, d.rua, d.pos, d.hero, d.situacao, d.acao, d.tamanho, d.allin, d.forca, "
-                f"j.cartas, d.data, CASE WHEN d.tamanho IS NULL THEN NULL ELSE {CASE_FAIXA.format(col='d.tamanho')} END "
-                f"FROM (SELECT * FROM decisoes{w}) d JOIN hands h ON h.id = d.hand_id "
-                "JOIN jogadores j ON j.hand_id = d.hand_id AND j.pos = d.pos "
-                "ORDER BY d.hand_id DESC, d.ordem LIMIT 300", p)]
-    linhas = linhas_de_mao(con, {m["hand_id"] for m in maos})
-    for m in maos:
-        m["linha"] = linhas.get(m["hand_id"], [])
     return {
         "geral": geral,
         "agrupar": filtros.get("_agrupar") if expr else None,
@@ -231,8 +220,145 @@ def consultar(con: sqlite3.Connection, filtros: dict) -> dict:
         "forca": contagem(con, w, p, "forca"),
         "draw": contagem(con, w, p, "draw"),
         "mesa": mesa(con, filtros),
-        "maos": maos,
     }
+
+
+# --- Ver mãos: a lista do filtro (uma decisão por linha, como a lista de mãos do H2N) e o replayer -------------------
+MAX_TODAS = 1000  # "ver todas" para aqui: mais que isso o filtro está largo demais para ler mão a mão
+
+
+def where_mda(corpo: dict) -> tuple[str, list]:
+    """O WHERE de um nó da árvore da MDA (a linha clicada), com os filtros de fora e o caminho afunilado; faixa
+    (opcional) = a linha de tamanho da tabela embaixo dos boxes ('B50', 'B50|AI' com o all-in separado)."""
+    rua = str(corpo.get("rua")) if corpo.get("rua") in ("flop", "turn", "river") else "flop"
+    externos = {k: v for k, v in (corpo.get("filtros") or {}).items() if k not in DA_ARVORE}
+    prefixo = [str(x) for x in corpo.get("prefixo") or []]
+    f = {**externos, **_caminho(corpo.get("caminho") or {}, rua), "rua": [rua], "acao": [str(corpo.get("acao", ""))]}
+    for i, r in enumerate(("flop", "turn")[:len(prefixo)]):
+        f[f"linha_{r}"] = [prefixo[i]]
+    w, p = where(f)
+    extra = [f"linha_atual = ?", f"{SITU} = ?"]
+    p += [str(corpo.get("atual", "")), "livre" if corpo.get("situ") == "livre" else "enfrenta"]
+    faixa = str(corpo.get("faixa") or "")
+    if faixa:
+        nome, _, ai = faixa.partition("|")
+        col = "tamanho" if corpo.get("acao") in ("Bet", "Raise") else "tamanho_enfrentado"
+        extra.append(f"{CASE_H2N.format(col=col)} = ?")
+        p.append(nome)
+        if col == "tamanho" and corpo.get("separar_ai"):
+            extra.append("allin = ?")
+            p.append(1 if ai else 0)
+    return w + _e(w) + " AND ".join(extra), p
+
+
+def maos(con: sqlite3.Connection, corpo: dict) -> dict:
+    """As mãos do filtro do Estudo (corpo.filtros) ou de um nó da MDA (corpo.mda), da mais nova para a mais velha:
+    uma linha por decisão, com a linha da mão por rua (linhas_de_mao) e quem decidiu. offset/limite paginam;
+    limite 0 = todas (até MAX_TODAS)."""
+    w, p = where_mda({**corpo["mda"], "filtros": corpo.get("filtros")}) if isinstance(corpo.get("mda"), dict) \
+        else where(corpo.get("filtros") or {})
+    total = con.execute(f"SELECT count(*) FROM decisoes{w}", p).fetchone()[0]
+    limite = int(corpo.get("limite") or 0) or MAX_TODAS
+    offset = max(int(corpo.get("offset") or 0), 0)
+    cols = ("hand_id", "ordem", "png", "data", "rua", "pos", "nome", "hero", "acao", "tamanho", "allin", "cartas", "lucro",
+            "n_jogadores")
+    linhas: list[dict] = [dict(zip(cols, r)) for r in con.execute(
+        "SELECT d.hand_id, d.ordem, h.png, d.data, d.rua, d.pos, j.nome, d.hero, d.acao, d.tamanho, d.allin, j.cartas, "
+        f"d.lucro, d.n_jogadores FROM (SELECT * FROM decisoes{w}) d JOIN hands h ON h.id = d.hand_id "
+        "JOIN jogadores j ON j.hand_id = d.hand_id AND j.pos = d.pos "
+        "ORDER BY CAST(d.hand_id AS INTEGER) DESC, d.ordem LIMIT ? OFFSET ?", p + [min(limite, MAX_TODAS), offset])]
+    por_mao = linhas_de_mao(con, {m["hand_id"] for m in linhas})
+    for m in linhas:
+        m["linha"] = por_mao.get(m["hand_id"], [])
+    return {"total": total, "offset": offset, "maos": linhas, "max_todas": MAX_TODAS}
+
+
+NOME_RUA_REPLAY = {"flop": "FLOP", "turn": "TURN", "river": "RIVER"}
+
+
+def quadros(n: int, ante: float, board: str, acoes: list, jog: dict) -> list[dict]:
+    """Cada estado da mesa, do flop ao showdown (o replayer). Valores em BB. acoes: (rua, pos, verbo, valor, allin) na
+    ordem; jog: pos -> {stack (inicial), cartas, nome, seat, hero, net}. Normaliza os quirks do WPT como `decisoes`:
+    "Raise" sem aposta = Bet; "Raise" all-in por menos e call all-in vêm com o total na rua; "Call 0" sem aposta = check.
+    ponytail: a bet que ninguém paga continua no pote até o showdown; o resultado de cada um sai do saldo da mão."""
+    cartas = board.split()
+    entrada = ante / n if n else 0.0
+    assentos = {p: {"pos": p, "nome": j.get("nome") or p, "seat": j.get("seat"), "hero": j.get("hero"),
+                    "stack": round((j.get("stack") or 0) - entrada, 2), "aposta": 0.0, "foldou": False,
+                    "cartas": j.get("cartas")} for p, j in jog.items()}
+    pote, rua, saida = round(ante, 2), None, []
+
+    def foto(texto, ator=None, odds=None, mostra=False, mostrar_board=None):
+        vis = cartas[:{"flop": 3, "turn": 4, "river": 5}.get(mostrar_board or rua or "", 0)]
+        saida.append({"rua": rua, "board": vis, "pote": round(pote, 2), "ator": ator, "texto": texto, "odds": odds,
+                      "assentos": [{**s, "cartas": s["cartas"] if (s["hero"] or mostra) else None,
+                                    "aposta": round(s["aposta"], 2), "stack": round(s["stack"], 2)}
+                                   for s in assentos.values()]})
+
+    maior = 0.0
+    for r, p, verbo, valor, allin in acoes:
+        if r != rua:
+            rua, maior = r, 0.0
+            for s in assentos.values():
+                s["aposta"] = 0.0
+            foto(NOME_RUA_REPLAY.get(r, r.upper()))
+        s = assentos.get(p)
+        if s is None:
+            continue
+        if verbo not in ("Check", "Bet", "Call", "Raise", "Fold"):  # Insurance, Show Card: aparece, não mexe em ficha
+            foto(verbo, ator=p)
+            continue
+        valor = valor or 0.0
+        if verbo == "Raise" and maior == 0:
+            verbo = "Bet"
+        por_menos = verbo == "Raise" and valor <= maior
+        if por_menos:
+            verbo = "Call"
+        if verbo == "Call" and maior == 0 and not valor:
+            verbo = "Check"
+        devendo = maior - s["aposta"]
+        odds = round(100 * devendo / (pote + devendo), 1) if devendo > 0 and verbo in ("Call", "Fold", "Raise") else None
+        if verbo in ("Bet", "Raise"):
+            poe, s["aposta"], maior = valor - s["aposta"], valor, valor
+        elif verbo == "Call":
+            novo = max(s["aposta"], valor) if (por_menos or allin) else s["aposta"] + valor
+            poe, s["aposta"] = novo - s["aposta"], novo
+        else:
+            poe = 0.0
+        s["stack"] -= poe
+        pote += poe
+        if verbo == "Fold":
+            s["foldou"] = True
+        quanto = "" if verbo in ("Check", "Fold") else f" {s['aposta']:g}"
+        foto(f"{verbo.upper()}{quanto}{' (all-in)' if allin else ''}", ator=p, odds=odds)
+    ordem = ["flop", "turn", "river"]
+    if rua in ordem:  # all-in antes do river: o board corre sem ação
+        for r in ordem[ordem.index(rua) + 1:len(cartas) - 2]:
+            rua = r
+            for s in assentos.values():
+                s["aposta"] = 0.0
+            foto(NOME_RUA_REPLAY[r])
+    vivos = [s for s in assentos.values() if not s["foldou"]]
+    for s in assentos.values():
+        s["aposta"] = 0.0
+    foto("SHOWDOWN" if len(vivos) > 1 else "FIM", mostra=len(vivos) > 1)
+    saida[-1]["resultado"] = {p: j.get("net") for p, j in jog.items()}
+    return saida
+
+
+def mao(con: sqlite3.Connection, corpo: dict) -> dict:
+    """Uma mão para o replayer: cabeçalho, os quadros e o print."""
+    hid = str(corpo.get("hand_id", ""))
+    linha = con.execute("SELECT id, png, n_jogadores, ante_bb, board, unidade, obs FROM hands WHERE id = ?", (hid,)).fetchone()
+    if not linha:
+        raise ValueError("mão desconhecida")
+    _, png, n, ante, board, unidade, obs = linha
+    acoes = con.execute("SELECT rua, pos, verbo, valor, allin FROM acoes WHERE hand_id = ? ORDER BY ordem", (hid,)).fetchall()
+    jog = {pos: {"seat": seat, "stack": stack, "net": net, "cartas": cs, "hero": hero, "nome": nome}
+           for pos, seat, stack, net, cs, hero, nome in con.execute(
+               "SELECT pos, seat, stack, net, cartas, hero, nome FROM jogadores WHERE hand_id = ?", (hid,))}
+    return {"hand_id": hid, "png": png, "data": decisoes.data_do_id(hid), "unidade": unidade, "obs": obs,
+            "quadros": quadros(n, ante or 0.0, board or "", acoes, jog)}
 
 
 LETRA = {"Check": "X", "Bet": "B", "Call": "C", "Raise": "R", "Fold": "F"}
@@ -683,6 +809,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(corpo)
             return None
         rotas = {"/api/consulta": consultar, "/api/painel": painel, "/api/mda": mda, "/api/leaks": leaks,
+                 "/api/maos": maos, "/api/mao": mao,
                  "/api/jogadores": jogadores, "/api/juntar": juntar, "/api/conferir": conferir, "/api/marcar": marcar,
                  "/api/serie": lambda con, corpo: resultados.serie(con, str(corpo.get("nome", "")),
                                                                    filtros=corpo.get("filtros"))}

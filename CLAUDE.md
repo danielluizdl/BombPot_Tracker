@@ -24,7 +24,9 @@ resultados.py  tabela derivada `resultados` (aba Jogadores): net, showdown e EV 
                jogador (saldo conferido pelas cartas; jackpot a parte; quem o seguro pagou e perdeu tudo = -investido)
 servidor.py    site local (127.0.0.1:8770): filtros -> WHERE em `decisoes`; painel, agrupar, exportar;
                aba MDA (`mda()`); Voce x populacao (`leaks()`); aba Conferir (`conferir()`/`marcar()`, taxa de erro
-               Clopper-Pearson so das sorteadas); selo (`saude()`); refaz as derivadas por PRAGMA data_version
+               Clopper-Pearson so das sorteadas); selo (`saude()`); refaz as derivadas por PRAGMA data_version;
+               Ver mãos (`maos()`: Estudo ou nó da MDA, 10 por vez, todas até 1.000) e replayer (`mao()`/`quadros()`:
+               cada estado da mesa em BB, com os quirks do WPT normalizados; o pop-up mostra o print ao lado)
 public/        a tela (HTML/JS puro, tema do DESIGN.md do MetaLens)
 PLANO_H2N.md   pesquisa H2N/HM3, debate e prioridades (todas as 7 fatias feitas)
 test_banco_real.py  refaz as contas do site direto da tabela acoes (independente) no banco real; pulado sem bombpot.db
