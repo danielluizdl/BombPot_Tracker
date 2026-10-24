@@ -308,9 +308,10 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 .seg-mao .ac { color: var(--muted); font-family: Consolas, monospace; font-size: 12px; }
 .seg-mao .ac.agr { color: var(--b); }
 .seg-mao .ac.eu { color: var(--text); font-weight: 700; background: #262d14; border-radius: 3px; padding: 0 3px; }
-.pc { display: inline-block; min-width: 22px; padding: 1px 3px; border-radius: 3px; background: #f1f1ee; color: #1b1e16;
-  font: 700 12px Consolas, monospace; text-align: center; }
-.pc.n-h, .pc.n-d { color: #c62828; } .pc.n-c { color: #1f7a3a; }
+/* baralho de 4 cores, como no WPT: ouros azul, copas vermelho, espadas preto, paus verde */
+.pc { display: inline-block; min-width: 22px; padding: 1px 3px; border-radius: 3px; color: #fff; background: #555;
+  font: 700 12px Consolas, monospace; text-align: center; border: 1px solid rgba(255, 255, 255, .25); }
+.pc.n-d { background: #1d5fc4; } .pc.n-h { background: #c62828; } .pc.n-s { background: #161616; } .pc.n-c { background: #1f8a3e; }
 .maos-rodape { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .mda-maos { padding: 0 16px 14px; display: flex; flex-direction: column; gap: 8px; }
 .mda-maos h4 { margin: 4px 0 0; font-size: 13px; }
@@ -344,7 +345,16 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 .rp-assento.foco .rp-placa small { color: var(--accent); font-weight: 600; }
 .rp-assento.foldou { opacity: .4; }
 .rp-fala { background: var(--accent); color: var(--accent-ink); font: 700 11px Consolas, monospace; border-radius: 5px; padding: 2px 6px; white-space: nowrap; }
-.rp-aposta { font: 600 12px Consolas, monospace; color: #f3e6b3; }
+/* fichas: a aposta de cada um entre o assento e o centro, e o pote no meio */
+.rp-fichas { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 5px; z-index: 2; pointer-events: none; }
+.ficha-pilha { position: relative; display: inline-block; width: 20px; height: 20px; flex: none; }
+.ficha-pilha i { position: absolute; left: 0; width: 20px; height: 20px; border-radius: 50%; border: 3px dashed #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .6); background: #c0392b; }
+.ficha-pilha i:nth-child(2) { top: -4px; background: #2c6fbb; } .ficha-pilha i:nth-child(3) { top: -8px; background: #1e8449; }
+.rp-fichas b { font: 700 12.5px Consolas, monospace; color: #fff; background: rgba(0, 0, 0, .55); border-radius: 4px; padding: 1px 5px; }
+.rp-pote-fichas { display: flex; align-items: center; gap: 6px; }
+.rp-dealer { position: absolute; transform: translate(-50%, -50%); width: 24px; height: 24px; border-radius: 50%; background: #f5f5f0; color: #111;
+  font: 800 13px system-ui, sans-serif; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0, 0, 0, .6); z-index: 2; }
 .rp-res { font: 700 12px Consolas, monospace; }
 @media (max-width: 760px) { .rp-mesa { height: 380px; margin: 26px 6px 34px; } .rp-feltro { inset: 46px 30px; } .rp-assento { width: 92px; } }
 @media (max-width: 900px) { .nicks-prints { grid-template-columns: 1fr; } }

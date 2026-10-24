@@ -1150,7 +1150,6 @@ function marcarConferencia(ok) {
   consultarConferir(++pedido, { hand_id: m.hand_id, ok, campo, obs, modo: confModo });
 }
 
-const textoCartas = cs => (cs ?? '').split(' ').filter(Boolean).map(c => c.replace('10', 'T')).join(' ');
 
 function desenharConferir() {
   const r = confDados, s = r.saude, m = r.mao;
@@ -1179,11 +1178,11 @@ function desenharConferir() {
     el('tbody', {}, m.jogadores.map(j => el('tr', { className: j.cartas && !j.showdown ? 'olhar' : '',
       title: j.cartas && !j.showdown ? 'Estas cartas não decidiram o showdown: nenhuma conta confere, só o seu olho.' : '' }, [
       el('td', { textContent: j.pos + (j.hero ? ' (Hero)' : '') }), el('td', { textContent: j.nome ?? '—' }),
-      el('td', { className: 'carta', textContent: textoCartas(j.cartas) || '—' }),
+      el('td', { className: 'carta' }, j.cartas ? cartasEl(j.cartas) : ['—']),
       el('td', { className: 'num', textContent: fmt(j.stack) }),
       el('td', { className: 'num ' + corValor(j.net), textContent: fmt(j.net) })])))]);
   const ruas = el('div', { className: 'rua-linha' }, m.linhas.map(([rua, board, pote, acoes]) => el('div', {}, [
-    el('b', { textContent: NOME_RUA[rua] }), el('span', { className: 'carta', textContent: textoCartas(board) }), ` (${fmt(pote)}) `,
+    el('b', { textContent: NOME_RUA[rua] }), el('span', { className: 'carta' }, cartasEl(board)), ` (${fmt(pote)}) `,
     acoes.map(([pos, a]) => `${pos} ${a}`).join(' · ')])));
   const duvida = m.pior_rank > m.limiar;
   const corpo = el('section', { className: 'card conf-mao' }, [
@@ -1191,7 +1190,7 @@ function desenharConferir() {
     m.obs ? el('p', { className: 'nota', style: 'padding:0', textContent: `Marcada: ${m.obs}` }) : null,
     duvida ? el('p', { className: 'nota neutro', style: 'padding:0', textContent:
       `Carta duvidosa: o número de alguma carta ficou a ${fmt(m.pior_rank, 3)} do modelo (99% das mãos ficam abaixo de ${fmt(m.limiar, 2)}; o leitor aceita até 0,16). Olhe todas as cartas com calma.` }) : null,
-    el('div', {}, [el('b', { textContent: 'Board ' }), el('span', { className: 'carta', textContent: textoCartas(m.board) })]),
+    el('div', {}, [el('b', { textContent: 'Board ' }), el('span', { className: 'carta' }, cartasEl(m.board))]),
     jogs, ruas,
     el('ul', { className: 'checklist' }, [
       el('li', { textContent: 'as cartas marcadas com ● (não decidiram o showdown: só o seu olho confere) e o board;' }),
@@ -1287,6 +1286,9 @@ const NAIPE = { c: '♣', d: '♦', h: '♥', s: '♠' };
 const cartaEl = c => el('span', { className: `pc n-${c.slice(-1)}`, textContent: `${c.slice(0, -1).replace('10', 'T')}${NAIPE[c.slice(-1)] ?? ''}` });
 const cartasEl = txt => (txt ?? '').split(' ').filter(Boolean).map(cartaEl);
 const POR_PAGINA = 10;
+// uma pilha de 1 a 3 fichas, maior quanto mais BB (só o desenho; o valor vai escrito ao lado)
+const pilhaFichas = v => el('span', { className: 'ficha-pilha', ariaHidden: 'true' },
+  Array.from({ length: v >= 50 ? 3 : v >= 10 ? 2 : 1 }, () => el('i')));
 
 function painelMaos(corpo, rotulo = 'Ver mãos', ja = false) {
   const caixa = el('div', { className: 'ver-maos' });
@@ -1360,7 +1362,7 @@ async function abrirReplayer(lista, inicio) {
     const mesa = el('div', { className: 'rp-mesa' }, [
       el('div', { className: 'rp-feltro' }, [
         el('div', { className: 'rp-board' }, f.board.map(cartaEl)),
-        el('div', { className: 'rp-pote num', textContent: `Pote: ${fmt(f.pote, 2)} BB` }),
+        el('div', { className: 'rp-pote-fichas' }, [pilhaFichas(f.pote), el('div', { className: 'rp-pote num', textContent: `Pote: ${fmt(f.pote, 2)} BB` })]),
         f.odds != null ? el('div', { className: 'rp-odds', textContent: `pot odds ${fmt(f.odds, 1)}%` }) : null]),
       ...f.assentos.map(s => {
         const [x, y] = LUGARES[((s.seat ?? 0) % 8 + 8) % 8];
@@ -1371,8 +1373,18 @@ async function abrirReplayer(lista, inicio) {
           el('div', { className: 'rp-placa' }, [el('b', { textContent: s.nome }), el('span', { className: 'num', textContent: `${fmt(s.stack, 2)} BB` }),
             el('small', { textContent: s.pos + (s.hero ? ' · Hero' : '') })]),
           f.ator === s.pos ? el('div', { className: 'rp-fala', textContent: f.texto }) : null,
-          s.aposta ? el('div', { className: 'rp-aposta num', textContent: fmt(s.aposta, 2) }) : null,
           res != null ? el('div', { className: 'rp-res num ' + corValor(res), textContent: bb(res) }) : null]);
+      }),
+      // as fichas apostadas na rua: entre o assento e o centro da mesa, com o valor
+      ...f.assentos.filter(s => s.aposta).map(s => {
+        const [x, y] = LUGARES[((s.seat ?? 0) % 8 + 8) % 8];
+        return el('div', { className: 'rp-fichas', style: `left:${x + (50 - x) * 0.42}%;top:${y + (50 - y) * 0.42}%` },
+          [pilhaFichas(s.aposta), el('b', { textContent: fmt(s.aposta, 2) })]);
+      }),
+      // o botão do dealer, ao lado do BTN
+      ...f.assentos.filter(s => s.pos === 'BTN').map(s => {
+        const [x, y] = LUGARES[((s.seat ?? 0) % 8 + 8) % 8];
+        return el('div', { className: 'rp-dealer', title: 'botão do dealer', textContent: 'D', style: `left:${x + (50 - x) * 0.36 + 5}%;top:${y + (50 - y) * 0.36}%` });
       })]);
     const ruas = ['flop', 'turn', 'river'];
     caixa.replaceChildren(
