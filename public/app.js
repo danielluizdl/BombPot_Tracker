@@ -1352,9 +1352,8 @@ async function abrirReplayer(lista, inicio) {
     const m = lista[i];
     dados = await (await fetch('/api/mao', { method: 'POST', body: JSON.stringify({ hand_id: m.hand_id }) })).json();
     if (dados.erro) { caixa.replaceChildren(el('p', { className: 'nota ruim', textContent: 'Erro: ' + dados.erro })); return; }
-    // começa na rua da decisão filtrada, na vez de quem decidiu
-    const j = dados.quadros.findIndex(f => f.rua === m.rua && f.ator === m.pos);
-    k = j >= 0 ? j : 0;
+    // começa sempre no flop, antes da primeira ação (o SB; heads-up, o BB); quem decidiu fica destacado (.foco)
+    k = 0;
     desenhar();
   };
   function desenhar() {
