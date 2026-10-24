@@ -52,8 +52,23 @@ caracteres do Replayer -- isso é código/dados de lá: perguntar ao dono antes.
     acrescenta linha: só entra mexendo no Replayer, com autorização).
 - Cartas com fundo da cor do naipe; replayer com fichas e valor, pote e botão D.
 - Perguntas ao dono no celular: claude.ai/artifact/9ux5jGPZbXvxQ95yirXEJu (db, coleção `respostas`, docs carta /
-  colada / novos / liberadas). Ler com ArtifactData `list` e seguir o que ele escolheu. "novos" = 103 prints em
-  Downloads\Hands BombPot ainda não processados (copiar, não mover).
+  colada / novos / liberadas). Sem resposta: segui as opções recomendadas e a página diz isso. **Ler com ArtifactData
+  `list`**: se ele discordar de alguma, desfazer.
+- Feito em seguida (24/out, madrugada): **1.692 mãos**, auditoria limpa, 193 testes.
+  - 10♦ aplicado pelo .fix.json (a mão entrou com a nota "corrigida a mao para 10d").
+  - 103 prints de Downloads\Hands BombPot copiados (com a data do arquivo) e processados: 101 ok, 1 repetido, 1 recusado
+    (ID_1333370720691216384, seguro: stack do HJ com o prêmio de 0,48 descontado), conferido no print e liberado.
+  - Subpastas do Downloads: `Seguro` tinha 1 mão nunca processada (ID_1308590669215768576, conferida e incluída) e 1 que
+    não é bomb pot; `Capturas incompletas` (2) sem HAND ID; `NaoBombPot` (20) fora por definição.
+  - Nicks: 4 pares novos, todos o mesmo jogador; 2 conferidos e ensinados, 2 juntos sem ensinar (nome cortado na mesa;
+    l/I). Ensino corrigiu 5 nomes; as 95 mãos com nome diferente do .txt original ficaram dentro do grupo.
+  - `conferencias_bombpot.json` regravado só local (BOMBPOT_COPIA não está definido nesta máquina); o drive tem o CSV de
+    23/out.
+- **Caixas coladas (ID_1319447058810109952), proposta para o Replayer** (pedir autorização antes): em
+  `wptparse/layout.py::segment`, as caixas saem de `_content_runs`, que só separa onde há linha vazia. No flop dessa mão
+  as faixas medem 366 e 239 px (3 e 2 caixas; `ROW_H_SIMPLE` = 110). Correção: faixa com altura > ~1,6×ROW_H_SIMPLE é
+  cortada nos vales de `mask.sum(axis=1)` (os cantos arredondados afinam a emenda), cada pedaço com altura >= min_h;
+  teste com este print e regressão no lote inteiro (refazer deve dar diff só nesta mão).
 
 ## O projeto em uma frase
 

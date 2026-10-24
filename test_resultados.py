@@ -182,10 +182,11 @@ def test_banco_real_dlzinn_em_toda_mao_em_que_esta(con):
 
 @real
 def test_banco_real_jackpot_de_todos(con):
-    """Os 8 jackpots da casa: o net fica so com o poker, e net + jackpot e o saldo da tela."""
+    """Os jackpots da casa (9 em 24/out; cresce com os prints novos): o net fica so com o poker, e net + jackpot e
+    o saldo da tela."""
     linhas = con.execute("SELECT r.nome, r.net, r.jackpot, j.net FROM resultados r JOIN jogadores j "
                          "ON j.hand_id = r.hand_id AND j.pos = r.pos WHERE r.jackpot != 0").fetchall()
-    assert len(linhas) == 8
+    assert len(linhas) >= 9
     assert all(net + jp == pytest.approx(tela, abs=0.02) for _, net, jp, tela in linhas)
     dl = r.serie(con, "dLzinN")["pontos"][-1]
     assert dl[5] == pytest.approx(120.0)  # o jackpot de $24 a $0,20 o BB
