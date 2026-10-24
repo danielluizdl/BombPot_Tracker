@@ -37,6 +37,24 @@ assentos, todos dentro do grupo. Sem ensinar: 5 grupos com traço ambíguo (丶/
 Próximo passo possível: o mesmo tipo de erro (I/1, l/I, 0/o) em jogador NOVO só some ensinando o dicionário de
 caracteres do Replayer -- isso é código/dados de lá: perguntar ao dono antes.
 
+## Sessão de 24/out: recusadas, cartas coloridas e replayer
+
+- 14 recusadas, cada uma com gabarito lido no print x leitura do OCR: **12 entraram** (1.588 mãos), auditoria limpa.
+  - 6 tinham uma faixa preta embaixo, fora do export; o Replayer acusava "export cortado". `tracker.sem_faixa_preta`
+    pinta só as linhas 100% pretas com a cor do painel antes do `build(img=...)` (PNG intacto; nenhuma das 1.576 aceitas
+    tinha faixa).
+  - 6 com leitura certa e conferência do Replayer errando (side pot ganho por quem fica negativo; call all-in depois do
+    próprio raise vem com o total; stack com prêmio de seguro descontado; all-in por menos no pote). Entraram pela tabela
+    `liberadas` (sha256 -> queixas exatas; queixa nova recusa de novo); nota em `hands.notas`.
+  - Faltam 2: ID_1319444335783862272 (carta não lida: no print é Q♠ **10♦**; corrigir com
+    `dados_wpt/labels/ID_1319444335783862272.fix.json` = {"carta.cima-esquerda[1]": "10d"} depois do sim do dono) e
+    ID_1319447058810109952 (caixas de ação coladas: o OCR perde UTG bet 12, UTG+1 call 12, HJ call 12; o .fix.json não
+    acrescenta linha: só entra mexendo no Replayer, com autorização).
+- Cartas com fundo da cor do naipe; replayer com fichas e valor, pote e botão D.
+- Perguntas ao dono no celular: claude.ai/artifact/9ux5jGPZbXvxQ95yirXEJu (db, coleção `respostas`, docs carta /
+  colada / novos / liberadas). Ler com ArtifactData `list` e seguir o que ele escolheu. "novos" = 103 prints em
+  Downloads\Hands BombPot ainda não processados (copiar, não mover).
+
 ## O projeto em uma frase
 
 Prints de bomb pot do WPT Global -> `wptparse` (do `..\Poker_Replayer`) -> SQLite (`bombpot.db`, fora do git) ->
