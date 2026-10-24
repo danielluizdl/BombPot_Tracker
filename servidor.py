@@ -679,7 +679,7 @@ def copiar_conferencias(con: sqlite3.Connection) -> Path:
     pasta BOMBPOT_COPIA (a do drive) ou, sem ela, ao lado do banco (fora do git)."""
     pasta = Path(os.environ.get("BOMBPOT_COPIA") or RAIZ)
     dados = {t: [dict(zip([c[0] for c in cur.description], r)) for r in cur]
-             for t in ("conferencias", "aliases", "nicks_conferidos") for cur in [con.execute(f"SELECT * FROM {t}")]}
+             for t in ("conferencias", "aliases", "nicks_conferidos", "liberadas") for cur in [con.execute(f"SELECT * FROM {t}")]}
     arq = pasta / "conferencias_bombpot.json"
     arq.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
     return arq

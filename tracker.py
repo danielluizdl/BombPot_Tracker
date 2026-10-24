@@ -33,6 +33,9 @@ from datetime import datetime, timezone
 from multiprocessing import Pool
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 RAIZ = Path(__file__).resolve().parent
 REPLAYER = Path(os.environ.get("POKER_REPLAYER", str(RAIZ.parent / "Poker_Replayer")))
 # Antes do import: o wptparse fixa a pasta de dados no import (__init__.py:77),
@@ -44,6 +47,7 @@ from wptparse import dicionarios, lotes  # noqa: E402
 from wptparse.armario import VERSAO  # noqa: E402
 from wptparse.cards import read_rank  # noqa: E402
 from wptparse.hand import build  # noqa: E402
+from wptparse.layout import PANEL_BG  # noqa: E402
 from wptparse.words import canon  # noqa: E402
 
 RUAS = ("flop", "turn", "river")
@@ -56,7 +60,8 @@ CREATE TABLE IF NOT EXISTS hands (
   versao_leitor TEXT,  -- armario.VERSAO-commit do Replayer (+sujo); NULL = lida antes de existir a coluna
   sha256 TEXT,         -- do PNG: amarra a mao a uma imagem exata
   mtime TEXT,          -- data do arquivo na leitura (UTC): cruza com a hora do HAND ID
-  pior_rank REAL       -- maior distancia de template entre os numeros das cartas (0 = identico; o leitor aceita ate 0,16)
+  pior_rank REAL,      -- maior distancia de template entre os numeros das cartas (0 = identico; o leitor aceita ate 0,16)
+  notas TEXT           -- correcao a mao (.fix.json) ou liberacao conferida no print; NULL = leitura sem ajuda
 );
 -- o mesmo print nao vira duas maos (o refazer apagava pelo id novo e deixava a antiga)
 CREATE UNIQUE INDEX IF NOT EXISTS hands_png ON hands (png);
@@ -88,13 +93,17 @@ CREATE TABLE IF NOT EXISTS conferencias (
 CREATE TABLE IF NOT EXISTS aliases (a TEXT NOT NULL, b TEXT NOT NULL, junta INTEGER NOT NULL, PRIMARY KEY (a, b));
 -- grafia de nick conferida no print (nicks.py): so estas ensinam o caderno do Replayer
 CREATE TABLE IF NOT EXISTS nicks_conferidos (nick TEXT PRIMARY KEY, fonte TEXT, quando TEXT NOT NULL);
+-- print recusado so pela conferencia do Replayer, com a leitura conferida campo a campo no print: issues = as
+-- queixas daquele momento (uma por linha); leitor que reclamar de outra coisa recusa de novo
+CREATE TABLE IF NOT EXISTS liberadas (sha256 TEXT PRIMARY KEY, png TEXT NOT NULL, issues TEXT NOT NULL,
+  motivo TEXT NOT NULL, quem TEXT NOT NULL, quando TEXT NOT NULL);
 """
 # colunas que bancos antigos nao tem (o CREATE TABLE IF NOT EXISTS nao as acrescenta)
-COLUNAS_NOVAS = {"hands": ("obs TEXT", "versao_leitor TEXT", "sha256 TEXT", "mtime TEXT", "pior_rank REAL"),
+COLUNAS_NOVAS = {"hands": ("obs TEXT", "versao_leitor TEXT", "sha256 TEXT", "mtime TEXT", "pior_rank REAL", "notas TEXT"),
                  "jogadores": ("nome TEXT",),
                  "conferencias": ("modo TEXT NOT NULL DEFAULT 'sorteio'",)}
 COLS_HANDS = ("id", "png", "n_jogadores", "ante_bb", "board", "unidade", "lido_em", "obs",
-              "versao_leitor", "sha256", "mtime", "pior_rank")
+              "versao_leitor", "sha256", "mtime", "pior_rank", "notas")
 
 
 class Recusa(Exception):
@@ -192,15 +201,32 @@ def so_dinheiro(issue: str) -> bool:
     return "seguro" in issue or "jackpot" in issue
 
 
-def linhas(hand, png_nome: str) -> tuple[tuple, list[tuple], list[tuple]]:
-    """A mao como linhas de hands/acoes/jogadores, em BB. Levanta Recusa."""
+def humana(issue: str) -> bool:
+    """Campo corrigido a mao no .fix.json do Replayer (wptparse/fixes.py): verdade lida no print por uma pessoa."""
+    return " a mao para " in issue
+
+
+def separar_issues(issues: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """(dinheiro: seguro/jackpot, humanas: correcoes a mao, outras: o resto, que recusa)."""
+    dinheiro = [i for i in issues if so_dinheiro(i)]
+    humanas = [i for i in issues if humana(i) and not so_dinheiro(i)]
+    return dinheiro, humanas, [i for i in issues if i not in dinheiro and i not in humanas]
+
+
+def linhas(hand, png_nome: str, liberadas: frozenset = frozenset()) -> tuple[tuple, list[tuple], list[tuple]]:
+    """A mao como linhas de hands/acoes/jogadores, em BB. Levanta Recusa.
+
+    liberadas: queixas que alguem ja conferiu no print e mostrou serem da conferencia do Replayer, nao da leitura
+    (tabela liberadas, por sha256 do PNG). So passa se TODA queixa que recusaria estiver nesse conjunto: uma queixa
+    nova (leitor novo, outro defeito) recusa de novo."""
     if not hand.hand_id:
         raise Recusa("sem HAND ID")
     if not hand.bomb_pot:
         raise Recusa("nao e bomb pot")
-    if hand.issues and not all(map(so_dinheiro, hand.issues)):
+    dinheiro, _, outras = separar_issues(list(hand.issues))
+    if outras and not set(outras) <= liberadas:
         raise Recusa("issues: " + "; ".join(hand.issues))
-    obs = "; ".join(hand.issues) or None
+    obs = "; ".join(dinheiro) or None
     if hand.unidade == "BB":
         fator = 1.0
     elif hand.bb:
@@ -254,17 +280,41 @@ def mover(png: Path, destino: Path) -> None:
         png.replace(destino)
 
 
-def ler(png: Path) -> tuple[Path, object, object]:
-    """A parte cara, que roda nos processos filhos: (png, hand, linhas) ou (png, None, motivo)."""
+def sem_faixa_preta(img: np.ndarray) -> np.ndarray:
+    """Pinta da cor do painel as linhas 100% pretas do fim da imagem (copia).
+
+    Alguns prints vem com uma faixa preta embaixo, de fora do export do WPT. O Replayer procura no fim a faixa vazia
+    na cor do painel que todo export inteiro tem (layout.is_truncated) e, achando preto, acusa "export cortado" --
+    e numa delas a ultima caixa de resultado esta desenhada por cima do preto. As linhas pintadas nao tem informacao
+    nenhuma (so preto); nenhum pixel com conteudo muda, e o arquivo original fica intacto."""
+    mx = img.reshape(img.shape[0], -1).max(axis=1)
+    n = 0
+    while n < len(mx) and mx[-1 - n] <= 8:
+        n += 1
+    if not n or n == len(mx):
+        return img
+    img = img.copy()
+    img[len(mx) - n:] = PANEL_BG
+    return img
+
+
+def ler(png: Path, liberadas: dict | None = None) -> tuple[Path, object, object]:
+    """A parte cara, que roda nos processos filhos: (png, hand, linhas) ou (png, None, motivo).
+    liberadas: sha256 do PNG -> queixas do Replayer ja conferidas no print (ver linhas)."""
     try:
-        hand = build(png, usar_armario=False, gravar=False)
-        mao, acoes, jogadores = linhas(hand, png.name)
-        # o export recusa o que nao fecha (fichas, campo faltando): vale para o banco tambem,
-        # menos na mao marcada (D6), onde o que nao fecha e justamente o saldo do seguro
+        img = sem_faixa_preta(np.array(Image.open(png).convert("RGB")))
+        hand = build(png, img=img, usar_armario=False, gravar=False)
+        sha = hashlib.sha256(png.read_bytes()).hexdigest()
+        livres = (liberadas or {}).get(sha, frozenset())
+        mao, acoes, jogadores = linhas(hand, png.name, livres)
+        _, humanas, outras = separar_issues(list(hand.issues))
+        # o export recusa o que nao fecha (fichas, campo faltando): vale para o banco tambem, menos na mao marcada
+        # (D6), onde o que nao fecha e justamente o saldo do seguro, e na liberada, que ja foi conferida no print
         _, motivo, _ = lotes.texto_da_mao(hand)
-        if motivo and not mao[-1]:
+        if motivo and not mao[-1] and not outras:
             raise Recusa(f"export: {motivo}")
-        resultado = (mao + proveniencia(png, hand), acoes, jogadores)
+        notas = "; ".join(humanas + (["liberada (conferida no print): " + "; ".join(outras)] if outras else [])) or None
+        resultado = (mao + proveniencia(png, hand) + (notas,), acoes, jogadores)
     except Recusa as exc:
         return png, None, str(exc)
     except Exception as exc:  # noqa: BLE001 - imagem ilegivel nao pode parar o lote
@@ -294,9 +344,14 @@ def registrar(png: Path, hand, resultado, con: sqlite3.Connection, raiz: Path = 
     return "ok"
 
 
+def liberadas(con: sqlite3.Connection) -> dict[str, frozenset]:
+    """sha256 do PNG -> as queixas do Replayer ja conferidas no print (tabela liberadas)."""
+    return {sha: frozenset(i for i in txt.split("\n") if i) for sha, txt in con.execute("SELECT sha256, issues FROM liberadas")}
+
+
 def processar(png: Path, con: sqlite3.Connection, raiz: Path = RAIZ) -> str:
     """Le um PNG, grava e move. Devolve 'ok', 'repetida' ou o motivo da recusa."""
-    return registrar(*ler(png), con, raiz)
+    return registrar(*ler(png, liberadas(con)), con, raiz)
 
 
 # 3 de 4 nucleos fisicos: medido nesta maquina, deixa um livre para o resto do PC
@@ -309,7 +364,8 @@ def processar_pasta(pasta: Path, con: sqlite3.Connection, raiz: Path = RAIZ,
     contagem: dict[str, int] = {}
     pool = Pool(min(processos, len(pngs))) if processos > 1 and len(pngs) > 1 else None
     try:
-        lidas = pool.imap(ler, pngs) if pool else map(ler, pngs)
+        leitor = functools.partial(ler, liberadas=liberadas(con))
+        lidas = pool.imap(leitor, pngs) if pool else map(leitor, pngs)
         for i, (png, hand, resultado) in enumerate(lidas, 1):
             r = registrar(png, hand, resultado, con, raiz)
             chave = r if r in ("ok", "repetida") else "recusada"
@@ -340,7 +396,8 @@ def refazer(con: sqlite3.Connection, raiz: Path = RAIZ, processos: int = PROCESS
     lidas_n = {"maos": 0, "recusadas": 0, "repetidas": 0, "nome_nas_duas_pastas": 0}
     pool = Pool(min(processos, len(pngs))) if processos > 1 and len(pngs) > 1 else None
     try:
-        for i, (png, hand, resultado) in enumerate(pool.imap(ler, pngs) if pool else map(ler, pngs), 1):
+        leitor = functools.partial(ler, liberadas=liberadas(con))
+        for i, (png, hand, resultado) in enumerate(pool.imap(leitor, pngs) if pool else map(leitor, pngs), 1):
             with novo:
                 if hand is None:
                     novo.execute("INSERT OR REPLACE INTO recusas VALUES (?,?,?)", (png.name, resultado, agora()))

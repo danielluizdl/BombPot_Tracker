@@ -118,6 +118,41 @@ def _uma_mao(tmp_path, nome="a.png"):
     return con
 
 
+def test_faixa_preta_do_fim_vira_cor_do_painel_e_a_leitura_nao_muda(tmp_path):
+    """Prints com faixa preta embaixo (fora do export do WPT) davam 'export cortado'. Pintar so as linhas 100% pretas
+    nao mexe em pixel com conteudo: o gabarito com 2.000 linhas pretas a mais le igual ao original."""
+    import numpy as np
+    from PIL import Image
+    a = np.array(Image.open(GABARITO).convert("RGB"))
+    b = np.vstack([a, np.zeros((2000, a.shape[1], 3), dtype=a.dtype)])
+    pintado = tracker.sem_faixa_preta(b)
+    assert (pintado[:a.shape[0]] == a).all() and (pintado[a.shape[0]:] == tracker.PANEL_BG).all()
+    assert tracker.sem_faixa_preta(a) is a  # sem faixa: a mesma imagem
+    Image.fromarray(b).save(tmp_path / "preta.png")
+    _, hand, r = tracker.ler(tmp_path / "preta.png")
+    assert hand is not None and not hand.issues
+    _, _, r0 = tracker.ler(GABARITO)
+    assert r[1] == r0[1] and r[2] == r0[2]  # mesmas acoes e jogadores
+
+
+def test_liberada_so_passa_com_as_mesmas_queixas():
+    queixa = "SB: replay soma 494 investido, saldo diz 466"
+    mao = _mao(issues=[queixa])
+    with pytest.raises(tracker.Recusa):
+        tracker.linhas(mao, "x.png")
+    assert tracker.linhas(mao, "x.png", frozenset({queixa}))[0][-1] is None  # nao vira marcada
+    with pytest.raises(tracker.Recusa):  # leitor novo com outra queixa: recusa de novo
+        tracker.linhas(_mao(issues=[queixa, "pote do turn: replay 1, imagem 2"]), "x.png", frozenset({queixa}))
+    seguro = "mao com seguro: x"
+    assert tracker.linhas(_mao(issues=[queixa, seguro]), "x", frozenset({queixa}))[0][-1] == seguro
+
+
+def test_correcao_a_mao_do_replayer_entra():
+    corrigida = "cima-esquerda[1]: carta corrigida a mao para 10d"
+    assert tracker.linhas(_mao(issues=[corrigida]), "x.png")[0][-1] is None
+    assert tracker.separar_issues([corrigida, "mao com seguro: y", "outra"]) == (["mao com seguro: y"], [corrigida], ["outra"])
+
+
 def test_mao_guarda_leitor_hash_data_e_distancia_das_cartas(tmp_path):
     con = _uma_mao(tmp_path)
     versao, sha, mtime, rank = con.execute("SELECT versao_leitor, sha256, mtime, pior_rank FROM hands").fetchone()
