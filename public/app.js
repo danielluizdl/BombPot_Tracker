@@ -1170,7 +1170,7 @@ function desenharConferir() {
   if (confModo === 'nicks') { $('conferir').replaceChildren(topo, ...conferirNick(r)); return; }
   if (!m) {
     $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota', textContent:
-      confModo === 'suspeita' ? 'Nenhuma carta duvidosa esperando conferência.' : 'Todas as mãos já foram conferidas.' })]));
+      confModo === 'suspeita' ? 'Nenhuma suspeita esperando conferência.' : 'Todas as mãos já foram conferidas.' })]));
     return;
   }
   const jogs = el('table', {}, [

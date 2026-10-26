@@ -580,6 +580,12 @@ def teto_erro(erros: int, n: int, confianca: float = 0.95) -> float | None:
     return round(hi, 4)
 
 
+# as 6 recusadas de 24/out que entraram pela faixa preta (sem_faixa_preta não deixa marca no banco); o dono pediu para
+# conferir as recuperadas na fila de suspeitas
+FAIXA_PRETA = ["1319441151563350016", "1319441408836730880", "1319449990681444352",
+               "1313280101588393984", "1315884957494267904", "1319452811691524096"]
+
+
 def saude(con: sqlite3.Connection) -> dict:
     """O selo do topo: auditoria, leitor aceito e a taxa de erro medida na conferencia por sorteio."""
     aud = auditar.auditar(con)
@@ -587,10 +593,16 @@ def saude(con: sqlite3.Connection) -> dict:
     n, erros = con.execute("SELECT count(*), coalesce(sum(ok = 0), 0) FROM conferencias WHERE modo = 'sorteio'").fetchone()
     total = con.execute("SELECT count(*) FROM conferencias").fetchone()[0]
     feitas = {h for (h,) in con.execute("SELECT hand_id FROM conferencias")}
+    # fila de suspeitas: primeiro as liberadas (leitura que o Replayer recusou e eu conferi; o dono pediu para olhar),
+    # depois as cartas duvidosas
+    liberadas = [h for (h,) in con.execute("SELECT h.id FROM hands h JOIN liberadas l ON l.sha256 = h.sha256 ORDER BY h.id")]
+    liberadas += [h for (h,) in con.execute(f"SELECT id FROM hands WHERE id IN ({','.join('?' * len(FAIXA_PRETA))})",
+                                            FAIXA_PRETA)]
+    duvidosas = [s.split(":")[0] for s in aud["cartas_duvidosas"]]
     return {"problemas": {k: len(v) for k, v in ruins.items()}, "exemplos": {k: v[:3] for k, v in ruins.items()},
             "leitor": auditar.aceito(RAIZ), "conferidas": n, "erros": erros, "teto": teto_erro(erros, n),
             "conferidas_total": total, "maos": con.execute("SELECT count(*) FROM hands").fetchone()[0],
-            "suspeitas": [s.split(":")[0] for s in aud["cartas_duvidosas"] if s.split(":")[0] not in feitas]}
+            "suspeitas": [h for h in dict.fromkeys(liberadas + duvidosas) if h not in feitas]}
 
 
 def dados_da_mao(con: sqlite3.Connection, hid: str) -> dict | None:
