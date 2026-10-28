@@ -10,7 +10,7 @@ Tracker de bomb pots do WPT Global: print -> mão (via `wptparse` do
 tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar / refazer / aceitar / auditar.
                Cada mao guarda versao_leitor (VERSAO-commit do Replayer, +sujo), sha256 e mtime do PNG e a pior
                distancia de template das cartas (pior_rank/pior_naipe). UNIQUE(png): um print, uma mao. Prints em
-               processadas/ = ID_<hand id>.png; print de mao que ja esta no banco vai para repetidas/ (nao vira mao).
+               processadas/ = ID_<hand id>.png; print de mao que ja esta no banco e apagado (nao vira mao).
                refazer NUNCA mexe no banco: rele processadas/+recusadas/ para bombpot_novo.db (+hh_novo/) e escreve
                refazer_<versao>.txt com o diff; aceitar audita, copia o banco (bombpot_antes_aceitar.db), troca as 4
                tabelas da leitura numa transacao, move os prints que mudaram de pasta e grava REPLAYER_OK.

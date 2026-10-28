@@ -338,8 +338,8 @@ def registrar(png: Path, hand, resultado, con: sqlite3.Connection, raiz: Path = 
         return resultado
     mao, acoes, jogadores = resultado
     if con.execute("SELECT 1 FROM hands WHERE id = ?", (mao[0],)).fetchone():
-        # o mesmo print salvo de novo: fica em repetidas/ (processadas/ tem um print por mao, a contagem bate com o app)
-        mover(png, destino_livre(png.with_name(f"ID_{mao[0]}.png"), raiz / "repetidas"))
+        # o mesmo print salvo de novo: apagado (o dono, 28/out); processadas/ tem o print da mao, um por mao
+        png.unlink()
         return "repetida"
     destino = destino_livre(png, raiz / "processadas")
     jogadores = com_anonimos(hand, jogadores)
@@ -635,10 +635,10 @@ def _sha(p: Path) -> str:
 
 
 def guardados(con: sqlite3.Connection, raiz: Path = RAIZ) -> set[str]:
-    """sha256 dos prints que o tracker guarda (processadas/ pelo banco; recusadas/, repetidas/, entrada/ lidos), so os
+    """sha256 dos prints que o tracker guarda (processadas/ pelo banco; recusadas/ e entrada/ lidos), so os
     que existem no disco: um print da origem com o mesmo conteudo ja tem copia identica aqui."""
     g = {s for s, png in con.execute("SELECT sha256, png FROM hands") if (raiz / "processadas" / png).is_file()}
-    return g | {_sha(p) for pasta in ("recusadas", "repetidas", "entrada") for p in (raiz / pasta).glob("*.png")}
+    return g | {_sha(p) for pasta in ("recusadas", "entrada") for p in (raiz / pasta).glob("*.png")}
 
 
 def diario(con: sqlite3.Connection, origem: Path = DOWNLOADS, raiz: Path = RAIZ) -> dict:
