@@ -6,24 +6,33 @@ em bifurcação real, e quer **teste real mão a mão** (conferir no print), nun
 
 ## Pendências (28/out) -- começar por aqui
 
-Estado: tudo commitado e com push nos dois projetos (tracker `8063833`, Replayer `5dc1014`). Banco com 1.692 mãos,
+Estado de manhã (antes do bloco "Feito em 28/out, tarde"): tudo commitado e com push nos dois projetos (tracker `8063833`, Replayer `5dc1014`). Banco com 1.692 mãos,
 leitor `28-5dc1014` aceito, auditoria limpa, 204 testes, os 1.679 `.txt` passam no `checa_txt`. As 42 mãos com seguro
 estão resolvidas (as 19 da fila `.txt` aprovadas pelo dono na aba Conferir e movidas para `Downloads\Hands BombPot`).
 
-1. **78 prints de bomb pot em `Downloads\Hands BombPot` ainda fora do banco.** Copiar para a entrada e processar
-   (`python tracker.py processar`), depois a rotina dos nicks e a auditoria.
-2. **13 mãos sem `.txt`** (1.692 mãos x 1.679 arquivos em `hh/maos`), de antes de 28/out: descobrir por que o
-   `exportar` pula essas (`lotes.texto_da_mao` devolve o motivo) e se dá para gerar sem inventar número.
-3. **1 recusada: ID_1319447058810109952** (caixas de ação coladas). A proposta para `wptparse/layout.py::segment` está
-   na seção de 24/out abaixo; mexe no Replayer, então pedir autorização ao dono antes.
-4. **Rótulo anônimo (`Player_<hash>`) não é estável entre leituras**: no refazer de 28/out o CO de
-   ID_1332512999523495936 trocou de hash (mesmo print, mesmo assento). O índice `Anonimos` do Replayer
-   (`wptparse/jogadores.py`) acumula exemplares conforme a ordem das mãos. Resolvido juntando os dois rótulos em
-   `aliases` (sem ensinar). Se voltar a acontecer em todo refazer, propor ao dono a correção lá no Replayer.
-5. **`Downloads\Hands BombPot\Seguro` só tem 3 notas de texto** (LEIA-ME, CONFERENCIA, PENDENTES_2026-10-28), todas
-   resolvidas. Perguntar ao dono se pode apagar a pasta.
-6. Backup das conferências: depois desta sessão há 19 pareceres `.txt` novos; subir um CSV novo para a pasta do
-   Google Drive (ver seção de 23/out), já que `BOMBPOT_COPIA` não está definido nesta máquina.
+Feito em 28/out, tarde (com autorização do dono para tudo abaixo): **1.773 mãos**, leitor `29-95206dd` aceito,
+auditoria limpa, 204 testes, 1.769 `.txt` limpos no `checa_txt`. Replayer `3796e77` (+ `95206dd`, só teste):
+- 89 prints de `Downloads\Hands BombPot` processados (79 ok). Recusadas que ficam (8, nada a fazer): 7 de 08/jun com o
+  print cortado de verdade (sem as linhas de resultado; conferido no print), 1 não é bomb pot (ID_1335402236871745536).
+  Fica também ID_1284020195598393344 (valor '$2,?' ilegível + seguro), não examinada a fundo.
+- ID_1284057098239545344 entrou com `dados_wpt/labels/ID_1284057098239545344.fix.json` = stack.esquerda "$ 48,98"
+  (o OCR leu '$ 4?,98'); saldos conferidos no print.
+- Export do Replayer desconta o jackpot do que o vencedor levou (`exportps.py`, `levados`): as 9 mãos com jackpot
+  ganharam `.txt` (ID_1326372798809112576 conferida no print: collected 21,08, pote 21,28, rake 0,20). Sem `.txt`
+  ficam 4 com seguro (1317586435893100544, 1317589224441716736, 1317681494711513088, 1333370720691216384).
+- Caixas coladas: `layout._separar_coladas` corta faixas > 1,6×ROW_H_SIMPLE onde os cantos de duas caixas se
+  encontram (massa desce 4 linhas, fundo <= 210, sobe 4). ID_1319447058810109952 entrou, conferida no print.
+  `armario.VERSAO` 29. Refazer: diff só nesta mão + rótulos anônimos. Testes em `tests/test_coladas_e_jackpot.py`.
+- Nicks: HtTZero -> HITZero juntos sem ensinar (I/l). Backup `conferencias_bombpot_2026-10-28.csv` no drive.
+
+Pendências:
+1. **Rótulo anônimo (`Player_<hash>`) troca em TODO refazer** (28/out, no 1o dos dois refazer: ID_1332512999523495936,
+   ID_1326367159877689344, ID_1326369971193495552). O índice `Anonimos` do Replayer (`wptparse/jogadores.py`)
+   acumula exemplares conforme a ordem das mãos. Hoje se junta em `aliases` a cada aceitar; propor ao dono a correção
+   lá no Replayer.
+2. **`Downloads\Hands BombPot\Seguro`** (3 notas de texto resolvidas): o dono autorizou apagar, mas o `rm` foi
+   bloqueado pela permissão do Claude Code; ele apaga à mão.
+3. Nada pushado nesta tarde (tracker nem Replayer).
 
 ## Sessão de 23/out: estrutura + confiança dos dados (relatório da mesa gstack: claude.ai/artifact/5aw7XWs6HyzUpYZo1Ek7JN)
 
