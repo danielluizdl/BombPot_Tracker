@@ -1,5 +1,6 @@
 """Gabaritos conferidos a olho contra o print (tests/*.png). Rodar: python -m pytest -q"""
 
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -79,6 +80,21 @@ def test_processar_grava_move_e_nao_duplica(tmp_path):
     assert sorted(p.name for p in (tmp_path / "processadas").iterdir()) == ["a.png"]
     assert sorted(p.name for p in (tmp_path / "repetidas").iterdir()) == ["ID_1311804268404871168.png"]  # a copia, pelo id
     assert not any((tmp_path / "entrada").iterdir())
+
+
+def test_diario_copia_so_o_novo_e_nao_mexe_na_origem(tmp_path):
+    con = tracker.abrir(tmp_path / "t.db")
+    origem = tmp_path / "Downloads"
+    (origem / "subpasta").mkdir(parents=True)
+    shutil.copy2(GABARITO, origem / "a.png")
+    (origem / "ruim.png").write_bytes(b"nao e png")
+    shutil.copy2(GABARITO, origem / "subpasta" / "c.png")  # so o nivel de cima
+    rel = tracker.diario(con, origem, tmp_path)
+    assert rel["copiados"] == 2 and rel["novas"] == ["1311804268404871168"] and rel["recusadas"][0][0] == "ruim.png"
+    assert rel["checa_txt"] == {} and json.loads(next((tmp_path / "diario").iterdir()).read_text(encoding="utf-8"))["novas"]
+    assert sorted(p.name for p in origem.iterdir()) == ["a.png", "ruim.png", "subpasta"]  # copia, nao move
+    shutil.copy2(GABARITO, origem / "a de novo.png")  # o mesmo print com outro nome: ja visto pelo conteudo
+    assert tracker.diario(con, origem, tmp_path)["copiados"] == 0
 
 
 def test_imagem_ilegivel_vai_para_recusadas(tmp_path):

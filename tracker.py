@@ -2,6 +2,9 @@
 
     python tracker.py processar [pasta]   le os PNGs da pasta (padrao: entrada/)
     python tracker.py vigiar [segundos]   fica lendo entrada/ a cada N segundos
+    python tracker.py diario [pasta]      copia os prints novos (padrao: Downloads\Hands BombPot), processa, checa
+                                          e grava diario/<data>.json (agendado: diario.bat + CONFERIR_DIA.md)
+    python tracker.py recortes <hand id>  o print em pedacos legiveis em diario/recortes/ (conferencia visual)
     python tracker.py refazer             rele processadas/ e recusadas/ para bombpot_novo.db e escreve o diff
     python tracker.py aceitar             audita o bombpot_novo.db e, se limpo, troca as maos do banco por ele
     python tracker.py auditar             confere as invariantes de todas as maos (auditar.py)
@@ -624,6 +627,67 @@ def vigiar(segundos: float, con: sqlite3.Connection, raiz: Path = RAIZ) -> None:
         time.sleep(segundos)
 
 
+DOWNLOADS = Path(os.environ.get("BOMBPOT_DOWNLOADS", str(Path.home() / "Downloads" / "Hands BombPot")))
+
+
+def _sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def novos(origem: Path, con: sqlite3.Connection, raiz: Path = RAIZ) -> list[Path]:
+    """PNGs do nivel de cima de origem que o tracker ainda nao viu, pelo conteudo (sha256): nem mao no banco, nem
+    print em recusadas/, repetidas/ ou entrada/. O nome nao serve: o mesmo print pode vir com outro nome."""
+    vistos = {s for (s,) in con.execute("SELECT sha256 FROM hands")}
+    vistos |= {_sha(p) for pasta in ("recusadas", "repetidas", "entrada") for p in (raiz / pasta).glob("*.png")}
+    return [p for p in sorted(origem.glob("*.png")) if _sha(p) not in vistos]
+
+
+def diario(con: sqlite3.Connection, origem: Path = DOWNLOADS, raiz: Path = RAIZ) -> dict:
+    """A rodada do dia: COPIA (a origem fica intacta) os prints novos para entrada/ com a data do arquivo, processa e
+    roda as checagens. Grava diario/<data>.json para a conferencia visual do Claude (CONFERIR_DIA.md)."""
+    import auditar
+    import checa_txt
+    import nicks
+    entrada = raiz / "entrada"
+    entrada.mkdir(exist_ok=True)
+    shutil.rmtree(raiz / "diario" / "recortes", ignore_errors=True)  # os da rodada anterior (~70 MB por dia)
+    copias =[Path(shutil.copy2(p, destino_livre(p, entrada))) for p in novos(origem, con, raiz)]
+    antes = {h for (h,) in con.execute("SELECT id FROM hands")}
+    contagem = processar_pasta(entrada, con, raiz, copias) if copias else {}
+    novas = sorted({h for (h,) in con.execute("SELECT id FROM hands")} - antes)
+    txt = {h: raiz / "hh" / "maos" / f"{h}.txt" for h in novas}
+    rel = {
+        "data": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "copiados": len(copias), "contagem": contagem, "novas": novas,
+        "recusadas": [list(r) for r in con.execute(
+            "SELECT png, motivo FROM recusas WHERE png IN (%s)" % ",".join("?" * len(copias)), [c.name for c in copias])],
+        "checa_txt": {h: (checa_txt.problemas(t.read_text(encoding="utf-8")) if t.is_file() else ["sem .txt"])
+                      for h, t in txt.items()},
+        "auditoria": auditar.violacoes(auditar.auditar(con, raiz)),
+        "nicks_pendentes": len(nicks.pendentes(con)),
+    }
+    rel["checa_txt"] = {h: p for h, p in rel["checa_txt"].items() if p}
+    (raiz / "diario").mkdir(exist_ok=True)
+    (raiz / "diario" / f"{datetime.now():%Y-%m-%d}.json").write_text(
+        json.dumps(rel, ensure_ascii=False, indent=1), encoding="utf-8")
+    return rel
+
+
+def recortes(hid: str, raiz: Path = RAIZ, altura: int = 1100) -> list[Path]:
+    """O print da mao em pedacos de `altura` px (com 100 de sobra entre eles) em diario/recortes/: o print inteiro,
+    lido de uma vez, chega reduzido e o historico fica pequeno demais para conferir valor a valor."""
+    img = Image.open(raiz / "processadas" / f"ID_{hid}.png")
+    pasta = raiz / "diario" / "recortes"
+    pasta.mkdir(parents=True, exist_ok=True)
+    saida = []
+    for i, y in enumerate(range(0, img.height, altura - 100)):
+        saida.append(pasta / f"{hid}_{i}.png")
+        img.crop((0, y, img.width, min(y + altura, img.height))).save(saida[-1])
+        if y + altura >= img.height:
+            break
+    return saida
+
+
 def main(argv: list[str]) -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # pyright: ignore[reportAttributeAccessIssue] - console cp1252 x nome de arquivo
     cmd = argv[0] if argv else "processar"
@@ -651,6 +715,13 @@ def main(argv: list[str]) -> int:
         print(nicks.ensinar(con))
     elif cmd == "nomes":
         print(preencher_nomes(con))
+    elif cmd == "diario":
+        rel = diario(con, Path(argv[1]) if len(argv) > 1 else DOWNLOADS)
+        print(json.dumps({k: rel[k] for k in ("copiados", "contagem", "recusadas", "checa_txt", "auditoria",
+                                              "nicks_pendentes")}, ensure_ascii=False))
+        print(f"{len(rel['novas'])} maos novas")
+    elif cmd == "recortes":
+        print("\n".join(str(p) for p in recortes(argv[1])))
     elif cmd == "vigiar":
         try:
             vigiar(float(argv[1]) if len(argv) > 1 else 5, con)
