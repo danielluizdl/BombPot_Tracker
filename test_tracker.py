@@ -269,3 +269,13 @@ def test_aceitar_recusa_banco_novo_que_falha_na_auditoria(tmp_path):
     msg = tracker.aceitar(con, tmp_path)
     assert msg.startswith("recusado, a auditoria") and "cartas_repetidas" in msg
     assert con.execute("SELECT cartas FROM jogadores WHERE hero = 1").fetchone() == ("Kc 10h",)
+
+
+def test_anonimo_so_no_processo_principal(monkeypatch):
+    """O filho do Pool nao toca em identidades.json (gravacao concorrente perdia rostos e o Player_<id> trocava a
+    cada refazer); o principal preenche so o nome que ficou vazio."""
+    monkeypatch.setattr(tracker.jogadores_wpt, "anonimos_dos", lambda players, indice=None: {"SB": "Player_x", "BB": "Player_y"})
+    linhas = [("1", "SB", 0, 10.0, -8.0, None, 0, 1, None), ("1", "BB", 1, 10.0, 8.0, None, 0, 2, "dLzinN")]
+    assert [j[-1] for j in tracker.com_anonimos(SimpleNamespace(players=[]), linhas)] == ["Player_x", "dLzinN"]
+    tracker._filho()
+    assert tracker.jogadores_wpt.anonimos_dos([]) == {}

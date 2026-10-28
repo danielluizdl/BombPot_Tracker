@@ -43,7 +43,7 @@ REPLAYER = Path(os.environ.get("POKER_REPLAYER", str(RAIZ.parent / "Poker_Replay
 os.environ.setdefault("POKER_REPLAYER_DADOS", str(RAIZ / "dados_wpt"))
 sys.path.insert(0, str(REPLAYER))
 
-from wptparse import dicionarios, lotes  # noqa: E402
+from wptparse import dicionarios, jogadores as jogadores_wpt, lotes  # noqa: E402
 from wptparse.armario import VERSAO  # noqa: E402
 from wptparse.cards import read_rank  # noqa: E402
 from wptparse.hand import build  # noqa: E402
@@ -339,6 +339,7 @@ def registrar(png: Path, hand, resultado, con: sqlite3.Connection, raiz: Path = 
         mover(png, destino_livre(png.with_name(f"ID_{mao[0]}.png"), raiz / "repetidas"))
         return "repetida"
     destino = destino_livre(png, raiz / "processadas")
+    jogadores = com_anonimos(hand, jogadores)
     with con:  # o banco guarda o nome com que o PNG fica em processadas/ (o /print/ do site procura por ele)
         gravar_linhas(con, (mao[0], destino.name, *mao[2:]), acoes, jogadores)
         con.execute("DELETE FROM recusas WHERE png = ?", (png.name,))
@@ -351,6 +352,22 @@ def registrar(png: Path, hand, resultado, con: sqlite3.Connection, raiz: Path = 
 def liberadas(con: sqlite3.Connection) -> dict[str, frozenset]:
     """sha256 do PNG -> as queixas do Replayer ja conferidas no print (tabela liberadas)."""
     return {sha: frozenset(i for i in txt.split("\n") if i) for sha, txt in con.execute("SELECT sha256, issues FROM liberadas")}
+
+
+def _filho() -> None:
+    """Inicio de cada processo do Pool: o filho nao toca no indice de anonimos (identidades.json).
+
+    Cada filho carregava o arquivo, juntava os rostos que viu e regravava tudo: o ultimo a gravar apagava os dos
+    outros, e o rotulo Player_<id> do mesmo assento trocava a cada refazer (28/out: 5 assentos ida e volta). O
+    principal resolve os anonimos em `com_anonimos`, um print por vez e na ordem dos arquivos."""
+    jogadores_wpt.anonimos_dos = lambda players, indice=None: {}
+
+
+def com_anonimos(hand, jogadores: list) -> list:
+    """Preenche o nome (ultima coluna) que ficou vazio com o rotulo anonimo estavel. So no processo principal; o
+    `.txt` (lotes.gravar, tambem aqui) chama o mesmo indice, que devolve o mesmo id para o mesmo recorte."""
+    anon = jogadores_wpt.anonimos_dos(hand.players)
+    return [j if j[-1] else (*j[:-1], anon.get(j[1])) for j in jogadores]
 
 
 def processar(png: Path, con: sqlite3.Connection, raiz: Path = RAIZ) -> str:
@@ -366,7 +383,7 @@ def processar_pasta(pasta: Path, con: sqlite3.Connection, raiz: Path = RAIZ,
                     pngs: list[Path] | None = None, processos: int = PROCESSOS) -> dict[str, int]:
     pngs = sorted(pasta.glob("*.png")) if pngs is None else pngs
     contagem: dict[str, int] = {}
-    pool = Pool(min(processos, len(pngs))) if processos > 1 and len(pngs) > 1 else None
+    pool = Pool(min(processos, len(pngs)), _filho) if processos > 1 and len(pngs) > 1 else None
     try:
         leitor = functools.partial(ler, liberadas=liberadas(con))
         lidas = pool.imap(leitor, pngs) if pool else map(leitor, pngs)
@@ -398,7 +415,7 @@ def refazer(con: sqlite3.Connection, raiz: Path = RAIZ, processos: int = PROCESS
     novo = abrir(novo_db)
     pngs = sorted((raiz / "processadas").glob("*.png")) + sorted((raiz / "recusadas").glob("*.png"))
     lidas_n = {"maos": 0, "recusadas": 0, "repetidas": 0, "nome_nas_duas_pastas": 0}
-    pool = Pool(min(processos, len(pngs))) if processos > 1 and len(pngs) > 1 else None
+    pool = Pool(min(processos, len(pngs)), _filho) if processos > 1 and len(pngs) > 1 else None
     try:
         leitor = functools.partial(ler, liberadas=liberadas(con))
         for i, (png, hand, resultado) in enumerate(pool.imap(leitor, pngs) if pool else map(leitor, pngs), 1):
@@ -412,7 +429,7 @@ def refazer(con: sqlite3.Connection, raiz: Path = RAIZ, processos: int = PROCESS
                     lidas_n["nome_nas_duas_pastas"] += 1  # outro print com o mesmo nome em processadas/: fica fora
                 else:
                     mao, acoes, jogadores = resultado
-                    gravar_linhas(novo, (mao[0], png.name, *mao[2:]), acoes, jogadores)
+                    gravar_linhas(novo, (mao[0], png.name, *mao[2:]), acoes, com_anonimos(hand, jogadores))
                     lotes.gravar(hand, raiz=hh_novo)
                     lidas_n["maos"] += 1
             print(f"\r  {i}/{len(pngs)}  {lidas_n}", end="", flush=True)
