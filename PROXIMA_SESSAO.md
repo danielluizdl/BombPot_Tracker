@@ -1,4 +1,4 @@
-# Próxima sessão: onde paramos (28/out/2026)
+# Próxima sessão: onde paramos (28/out/2026, noite)
 
 Leia antes: `CLAUDE.md` (mapa, quirks do WPT, regras), depois este arquivo. `PROMPT.md` e `PLANO_H2N.md` são o
 histórico de decisões. O dono escreve em português, prefere que eu escolha o recomendado e siga, perguntando só
@@ -25,14 +25,22 @@ auditoria limpa, 204 testes, 1.769 `.txt` limpos no `checa_txt`. Replayer `3796e
   `armario.VERSAO` 29. Refazer: diff só nesta mão + rótulos anônimos. Testes em `tests/test_coladas_e_jackpot.py`.
 - Nicks: HtTZero -> HITZero juntos sem ensinar (I/l). Backup `conferencias_bombpot_2026-10-28.csv` no drive.
 
+Feito em 28/out, noite (autorizado pelo dono): **1.774 mãos**, leitor `29-b428746` aceito, auditoria limpa, 205
+testes, 1.770 `.txt` limpos. Replayer `6617d5b`, `f3e74e4`, `b428746`; tracker `e43963b`. Portão: 9 falhas, as conhecidas.
+- **Rótulo anônimo estável**: `Anonimos.vistos` lembra o id de cada recorte (sha1 do PNG); o índice padrão fica aberto
+  no processo e só grava quando muda. No tracker os filhos do Pool não resolvem anônimo (`_filho`): o processo
+  principal preenche (`com_anonimos`), senão os filhos sobrescreviam `identidades.json` uns dos outros.
+  Junto em `aliases`: Player_797dcf78 -> Player_82e33851 ("FIndlighter...", nome cortado, mesmo avatar, conferido no
+  print de ID_1328192555300286464 x ID_1319497918793670656).
+- **Limite do print em BB = $0,10/$0,20** (`lotes.reserva(unidade)`; dinheiro segue 0,20/0,40): ante 8 BB = $1,60,
+  sem straddle. Conferido mão a mão `hh` antes x depois: as 600 mãos BB com todo valor = metade ao centavo e o resto do
+  texto igual; as em dinheiro idênticas (fora 10 trocas de rótulo anônimo); stacks x banco com a mesma distribuição de
+  ajuste all-in (0 fora da regra); ID_1321296493367336960 conferida no print. As 6 USD com BB 0,40 não mudaram.
+- Refazer de prova: 1.774 iguais, 0 mudou, `.txt` idênticos. A pasta `Seguro` foi apagada.
+- ID_1284020195598393344 entrou com `labels/ID_1284020195598393344.fix.json` = flop[7].amount "$ 2,84".
+
 Pendências:
-1. **Rótulo anônimo (`Player_<hash>`) troca em TODO refazer** (28/out, no 1o dos dois refazer: ID_1332512999523495936,
-   ID_1326367159877689344, ID_1326369971193495552). O índice `Anonimos` do Replayer (`wptparse/jogadores.py`)
-   acumula exemplares conforme a ordem das mãos. Hoje se junta em `aliases` a cada aceitar; propor ao dono a correção
-   lá no Replayer.
-2. **`Downloads\Hands BombPot\Seguro`** (3 notas de texto resolvidas): o dono autorizou apagar, mas o `rm` foi
-   bloqueado pela permissão do Claude Code; ele apaga à mão.
-3. Nada pushado nesta tarde (tracker nem Replayer).
+1. Nada pushado (tracker nem Replayer) desde `8063833` / `5dc1014`.
 
 ## Sessão de 23/out: estrutura + confiança dos dados (relatório da mesa gstack: claude.ai/artifact/5aw7XWs6HyzUpYZo1Ek7JN)
 
