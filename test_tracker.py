@@ -82,7 +82,7 @@ def test_processar_grava_move_e_nao_duplica(tmp_path):
     assert not any((tmp_path / "entrada").iterdir())
 
 
-def test_diario_copia_so_o_novo_e_nao_mexe_na_origem(tmp_path):
+def test_diario_esvazia_a_origem_e_so_apaga_o_que_ja_esta_guardado(tmp_path):
     con = tracker.abrir(tmp_path / "t.db")
     origem = tmp_path / "Downloads"
     (origem / "subpasta").mkdir(parents=True)
@@ -90,11 +90,16 @@ def test_diario_copia_so_o_novo_e_nao_mexe_na_origem(tmp_path):
     (origem / "ruim.png").write_bytes(b"nao e png")
     shutil.copy2(GABARITO, origem / "subpasta" / "c.png")  # so o nivel de cima
     rel = tracker.diario(con, origem, tmp_path)
-    assert rel["copiados"] == 2 and rel["novas"] == ["1311804268404871168"] and rel["recusadas"][0][0] == "ruim.png"
+    assert rel["movidos"] == 2 and rel["apagados"] == 0 and rel["novas"] == ["1311804268404871168"]
+    assert rel["recusadas"][0][0] == "ruim.png" and (tmp_path / "recusadas" / "ruim.png").is_file()
     assert rel["checa_txt"] == {} and json.loads(next((tmp_path / "diario").iterdir()).read_text(encoding="utf-8"))["novas"]
-    assert sorted(p.name for p in origem.iterdir()) == ["a.png", "ruim.png", "subpasta"]  # copia, nao move
-    shutil.copy2(GABARITO, origem / "a de novo.png")  # o mesmo print com outro nome: ja visto pelo conteudo
-    assert tracker.diario(con, origem, tmp_path)["copiados"] == 0
+    assert [p.name for p in origem.iterdir()] == ["subpasta"]
+    shutil.copy2(GABARITO, origem / "a de novo.png")  # o mesmo print com outro nome: copia identica em processadas/
+    rel = tracker.diario(con, origem, tmp_path)
+    assert rel["movidos"] == 0 and rel["apagados"] == 1 and [p.name for p in origem.iterdir()] == ["subpasta"]
+    (tmp_path / "processadas" / "a.png").unlink()  # sumiu do tracker: nao apaga o da origem, processa de novo
+    shutil.copy2(GABARITO, origem / "a.png")
+    assert tracker.diario(con, origem, tmp_path)["movidos"] == 1
 
 
 def test_imagem_ilegivel_vai_para_recusadas(tmp_path):

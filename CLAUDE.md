@@ -14,9 +14,9 @@ tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar 
                refazer NUNCA mexe no banco: rele processadas/+recusadas/ para bombpot_novo.db (+hh_novo/) e escreve
                refazer_<versao>.txt com o diff; aceitar audita, copia o banco (bombpot_antes_aceitar.db), troca as 4
                tabelas da leitura numa transacao, move os prints que mudaram de pasta e grava REPLAYER_OK.
-diario.bat     agendado (tarefa "BombPot conferencia diaria", 23:30): `tracker.py diario` copia os prints novos (sha256)
-               de Downloads\Hands BombPot, processa e checa -> diario/<data>.json; depois `claude -p` segue
-               CONFERIR_DIA.md (.txt x print com `tracker.py recortes`, divergencia -> fila_txt.json) -> diario/<data>.md
+diario.bat     agendado (tarefa "BombPot conferencia diaria", 23:30): `tracker.py diario` esvazia Downloads\Hands BombPot (move o novo;
+               apaga o que ja esta guardado identico, por sha256), processa e checa -> diario/<data_hora>.json; depois `claude -p` segue
+               CONFERIR_DIA.md (.txt x print com `tracker.py recortes`, divergencia -> fila_txt.json) -> diario/<data_hora>.md
 nicks.py       fiscalizacao dos nicks: grupos, grafia real, ensino do caderno do Replayer (ver abaixo)
 auditar.py     invariantes de todas as maos (acao ilegal, cartas repetidas, saldo x cartas, fold = -8 BB, print
                ausente, leitor nao aceito...); informativas: cartas duvidosas, hora estranha, excluidas

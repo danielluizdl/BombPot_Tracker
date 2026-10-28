@@ -7,12 +7,13 @@ ausente: o seu trabalho aqui é achar divergência, não corrigir.
 
 ## 1. O que entrou hoje
 
-O `diario.bat` já rodou `python tracker.py diario` (copiou os prints novos de `Downloads\Hands BombPot` para
-`entrada/`, processou, checou). Leia `diario/<hoje AAAA-MM-DD>.json`:
+O `diario.bat` já rodou `python tracker.py diario` (moveu os prints novos de `Downloads\Hands BombPot` para
+`entrada/`, apagou de lá os que o tracker já guarda idênticos, processou, checou). Leia o `.json` mais recente de
+`diario/` (`AAAA-MM-DD_HHMM.json`; tem de ser de hoje):
 `novas` (hand ids que entraram), `recusadas` ([png, motivo]), `checa_txt` (problemas no .txt de mão nova),
 `auditoria` (violações no banco inteiro), `nicks_pendentes`.
 
-Se não houver arquivo de hoje, o passo do Python falhou: escreva isso no relatório (veja `diario/ultima_execucao.log`)
+Se não houver `.json` de hoje, o passo do Python falhou: escreva isso no relatório (veja `diario/ultima_execucao.log`)
 e pare.
 
 ## 2. Nicks
@@ -57,8 +58,8 @@ Para cada uma de `recusadas`: abra o print em `recusadas/` e diga em uma linha s
 
 ## 5. Relatório
 
-Escreva `diario/<hoje>.md`, em português, curto, para o dono:
-- quantas mãos entraram, repetidas, recusadas (com o motivo e o seu parecer de cada recusada);
+Escreva `diario/<o mesmo nome do .json>.md`, em português, curto, para o dono:
+- quantos prints vieram do Downloads (`movidos`; `apagados` = já guardados idênticos), quantas mãos entraram, repetidas, recusadas (com o motivo e o seu parecer de cada recusada);
 - quantas você conferiu contra o print e o resultado: "N conferidas, 0 divergências" ou a lista do que foi para a fila;
 - auditoria (`auditoria` vazia = limpa) e nicks (o que decidiu, o que ficou para ele);
 - qualquer coisa que travou.

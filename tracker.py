@@ -2,8 +2,8 @@
 
     python tracker.py processar [pasta]   le os PNGs da pasta (padrao: entrada/)
     python tracker.py vigiar [segundos]   fica lendo entrada/ a cada N segundos
-    python tracker.py diario [pasta]      copia os prints novos (padrao: Downloads\Hands BombPot), processa, checa
-                                          e grava diario/<data>.json (agendado: diario.bat + CONFERIR_DIA.md)
+    python tracker.py diario [pasta]      move os prints novos (padrao: Downloads/Hands BombPot), processa, checa
+                                          e grava diario/<data_hora>.json (agendado: diario.bat + CONFERIR_DIA.md)
     python tracker.py recortes <hand id>  o print em pedacos legiveis em diario/recortes/ (conferencia visual)
     python tracker.py refazer             rele processadas/ e recusadas/ para bombpot_novo.db e escreve o diff
     python tracker.py aceitar             audita o bombpot_novo.db e, se limpo, troca as maos do banco por ele
@@ -634,31 +634,39 @@ def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def novos(origem: Path, con: sqlite3.Connection, raiz: Path = RAIZ) -> list[Path]:
-    """PNGs do nivel de cima de origem que o tracker ainda nao viu, pelo conteudo (sha256): nem mao no banco, nem
-    print em recusadas/, repetidas/ ou entrada/. O nome nao serve: o mesmo print pode vir com outro nome."""
-    vistos = {s for (s,) in con.execute("SELECT sha256 FROM hands")}
-    vistos |= {_sha(p) for pasta in ("recusadas", "repetidas", "entrada") for p in (raiz / pasta).glob("*.png")}
-    return [p for p in sorted(origem.glob("*.png")) if _sha(p) not in vistos]
+def guardados(con: sqlite3.Connection, raiz: Path = RAIZ) -> set[str]:
+    """sha256 dos prints que o tracker guarda (processadas/ pelo banco; recusadas/, repetidas/, entrada/ lidos), so os
+    que existem no disco: um print da origem com o mesmo conteudo ja tem copia identica aqui."""
+    g = {s for s, png in con.execute("SELECT sha256, png FROM hands") if (raiz / "processadas" / png).is_file()}
+    return g | {_sha(p) for pasta in ("recusadas", "repetidas", "entrada") for p in (raiz / pasta).glob("*.png")}
 
 
 def diario(con: sqlite3.Connection, origem: Path = DOWNLOADS, raiz: Path = RAIZ) -> dict:
-    """A rodada do dia: COPIA (a origem fica intacta) os prints novos para entrada/ com a data do arquivo, processa e
-    roda as checagens. Grava diario/<data>.json para a conferencia visual do Claude (CONFERIR_DIA.md)."""
+    """A rodada do dia: esvazia o nivel de cima da origem (o dono ve a pasta vazia = tudo entrou). Print novo MUDA
+    para entrada/ (com a data do arquivo) e e processado; print que o tracker ja guarda, com o mesmo conteudo
+    (sha256), e apagado da origem. Grava diario/<data_hora>.json para a conferencia visual do Claude (CONFERIR_DIA.md)."""
     import auditar
     import checa_txt
     import nicks
     entrada = raiz / "entrada"
     entrada.mkdir(exist_ok=True)
     shutil.rmtree(raiz / "diario" / "recortes", ignore_errors=True)  # os da rodada anterior (~70 MB por dia)
-    copias =[Path(shutil.copy2(p, destino_livre(p, entrada))) for p in novos(origem, con, raiz)]
+    ja, movidos, apagados = guardados(con, raiz), 0, 0
+    for p in sorted(origem.glob("*.png")):
+        if _sha(p) in ja:
+            p.unlink()
+            apagados += 1
+        else:
+            shutil.move(p, destino_livre(p, entrada))
+            movidos += 1
+    copias = sorted(entrada.glob("*.png"))  # + o que uma rodada interrompida deixou
     antes = {h for (h,) in con.execute("SELECT id FROM hands")}
     contagem = processar_pasta(entrada, con, raiz, copias) if copias else {}
     novas = sorted({h for (h,) in con.execute("SELECT id FROM hands")} - antes)
     txt = {h: raiz / "hh" / "maos" / f"{h}.txt" for h in novas}
     rel = {
         "data": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "copiados": len(copias), "contagem": contagem, "novas": novas,
+        "movidos": movidos, "apagados": apagados, "contagem": contagem, "novas": novas,
         "recusadas": [list(r) for r in con.execute(
             "SELECT png, motivo FROM recusas WHERE png IN (%s)" % ",".join("?" * len(copias)), [c.name for c in copias])],
         "checa_txt": {h: (checa_txt.problemas(t.read_text(encoding="utf-8")) if t.is_file() else ["sem .txt"])
@@ -668,7 +676,7 @@ def diario(con: sqlite3.Connection, origem: Path = DOWNLOADS, raiz: Path = RAIZ)
     }
     rel["checa_txt"] = {h: p for h, p in rel["checa_txt"].items() if p}
     (raiz / "diario").mkdir(exist_ok=True)
-    (raiz / "diario" / f"{datetime.now():%Y-%m-%d}.json").write_text(
+    (raiz / "diario" / f"{datetime.now():%Y-%m-%d_%H%M}.json").write_text(
         json.dumps(rel, ensure_ascii=False, indent=1), encoding="utf-8")
     return rel
 
@@ -717,7 +725,7 @@ def main(argv: list[str]) -> int:
         print(preencher_nomes(con))
     elif cmd == "diario":
         rel = diario(con, Path(argv[1]) if len(argv) > 1 else DOWNLOADS)
-        print(json.dumps({k: rel[k] for k in ("copiados", "contagem", "recusadas", "checa_txt", "auditoria",
+        print(json.dumps({k: rel[k] for k in ("movidos", "apagados", "contagem", "recusadas", "checa_txt", "auditoria",
                                               "nicks_pendentes")}, ensure_ascii=False))
         print(f"{len(rel['novas'])} maos novas")
     elif cmd == "recortes":
