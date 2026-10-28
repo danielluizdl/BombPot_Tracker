@@ -1,8 +1,29 @@
-# Próxima sessão: onde paramos (23/out/2026)
+# Próxima sessão: onde paramos (28/out/2026)
 
 Leia antes: `CLAUDE.md` (mapa, quirks do WPT, regras), depois este arquivo. `PROMPT.md` e `PLANO_H2N.md` são o
 histórico de decisões. O dono escreve em português, prefere que eu escolha o recomendado e siga, perguntando só
 em bifurcação real, e quer **teste real mão a mão** (conferir no print), nunca suposição.
+
+## Pendências (28/out) -- começar por aqui
+
+Estado: tudo commitado e com push nos dois projetos (tracker `8063833`, Replayer `5dc1014`). Banco com 1.692 mãos,
+leitor `28-5dc1014` aceito, auditoria limpa, 204 testes, os 1.679 `.txt` passam no `checa_txt`. As 42 mãos com seguro
+estão resolvidas (as 19 da fila `.txt` aprovadas pelo dono na aba Conferir e movidas para `Downloads\Hands BombPot`).
+
+1. **78 prints de bomb pot em `Downloads\Hands BombPot` ainda fora do banco.** Copiar para a entrada e processar
+   (`python tracker.py processar`), depois a rotina dos nicks e a auditoria.
+2. **13 mãos sem `.txt`** (1.692 mãos x 1.679 arquivos em `hh/maos`), de antes de 28/out: descobrir por que o
+   `exportar` pula essas (`lotes.texto_da_mao` devolve o motivo) e se dá para gerar sem inventar número.
+3. **1 recusada: ID_1319447058810109952** (caixas de ação coladas). A proposta para `wptparse/layout.py::segment` está
+   na seção de 24/out abaixo; mexe no Replayer, então pedir autorização ao dono antes.
+4. **Rótulo anônimo (`Player_<hash>`) não é estável entre leituras**: no refazer de 28/out o CO de
+   ID_1332512999523495936 trocou de hash (mesmo print, mesmo assento). O índice `Anonimos` do Replayer
+   (`wptparse/jogadores.py`) acumula exemplares conforme a ordem das mãos. Resolvido juntando os dois rótulos em
+   `aliases` (sem ensinar). Se voltar a acontecer em todo refazer, propor ao dono a correção lá no Replayer.
+5. **`Downloads\Hands BombPot\Seguro` só tem 3 notas de texto** (LEIA-ME, CONFERENCIA, PENDENTES_2026-10-28), todas
+   resolvidas. Perguntar ao dono se pode apagar a pasta.
+6. Backup das conferências: depois desta sessão há 19 pareceres `.txt` novos; subir um CSV novo para a pasta do
+   Google Drive (ver seção de 23/out), já que `BOMBPOT_COPIA` não está definido nesta máquina.
 
 ## Sessão de 23/out: estrutura + confiança dos dados (relatório da mesa gstack: claude.ai/artifact/5aw7XWs6HyzUpYZo1Ek7JN)
 
