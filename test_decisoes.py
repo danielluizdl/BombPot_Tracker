@@ -7,6 +7,8 @@ import servidor
 import tracker
 from test_tracker import GABARITO
 
+C = decisoes.COL  # coluna -> posicao na linha de linhas_da_mao
+
 
 @pytest.fixture(scope="module")
 def con(tmp_path_factory):
@@ -49,7 +51,7 @@ def test_aposta_allin_escrita_como_raise_vira_bet():
     jog = {p: {"stack": 100, "cartas": None, "hero": 0, "ordem": i} for i, p in enumerate(("SB", "BTN"), 1)}
     acoes = [("flop", "SB", "Check", None, 0, 16.0), ("flop", "BTN", "Raise", 92.0, 1, 16.0)]
     d = decisoes.linhas_da_mao("x", 2, 16.0, "", acoes, jog, False)[1]
-    assert (d[18], d[11], d[20]) == ("Bet", "livre", 1)  # acao, situacao, allin
+    assert (d[C["acao"]], d[C["situacao"]], d[C["allin"]]) == ("Bet", "livre", 1)  # acao, situacao, allin
 
 
 def test_call_zero_sem_aposta_vira_check():  # ID_1318375308628545536: "Call $0.00" no turn e no river
@@ -57,7 +59,7 @@ def test_call_zero_sem_aposta_vira_check():  # ID_1318375308628545536: "Call $0.
     acoes = [("flop", "UTG", "Check", None, 0, 64.0), ("flop", "HJ", "Check", None, 0, 64.0),
              ("turn", "UTG", "Call", 0.0, 0, 64.0), ("turn", "HJ", "Bet", 10.0, 0, 64.0)]
     d = decisoes.linhas_da_mao("x", 2, 64.0, "", acoes, jog, False)
-    assert (d[2][18], d[2][11], d[3][11]) == ("Check", "livre", "livre")  # e o HJ continua apostando "livre"
+    assert (d[2][C["acao"]], d[2][C["situacao"]], d[3][C["situacao"]]) == ("Check", "livre", "livre")  # e o HJ continua apostando "livre"
 
 
 def test_mao_marcada_nao_usa_o_saldo_da_tela():  # o saldo com seguro/jackpot nao e o do poker
@@ -134,7 +136,7 @@ def test_linha_do_jogador():
              ("flop", "SB", "Call", 8.0, 0, 24.0), ("turn", "SB", "Check", None, 0, 32.0),
              ("turn", "BTN", "Check", None, 0, 32.0), ("river", "SB", "Bet", 20.0, 0, 32.0)]
     r = decisoes.linhas_da_mao("x", 2, 16.0, "", acoes, jog, False)
-    assert (r[3][33], r[5][33], r[5][34]) == ("XC", "XC", "X")  # linha_flop / linha_turn
+    assert (r[3][C["linha_flop"]], r[5][C["linha_flop"]], r[5][C["linha_turn"]]) == ("XC", "XC", "X")  # linha_flop / linha_turn
     assert r[1][decisoes.COL_RESPOSTA] == "pago"
 
 
@@ -254,9 +256,11 @@ def test_allin_por_menos_escrito_como_raise_vira_call():
              ("flop", "HJ", "Call", 16.0, 0, 89.0), ("turn", "HJ", "Check", None, 0, 105.0)]
     r = decisoes.linhas_da_mao("x", 3, 24.0, "", acoes, jog, False)
     utg1, hj, hj_turn = r[1], r[2], r[3]
-    assert (utg1[18], utg1[19], utg1[11]) == ("Call", None, "enfrenta aposta")  # acao, tamanho, situacao
-    assert (hj[11], hj[12]) == ("enfrenta aposta", 0.25)  # o HJ ainda enfrenta a bet de 16 em 64, nao um "raise"
+    assert (utg1[C["acao"]], utg1[C["tamanho"]], utg1[C["situacao"]]) == ("Call", None, "enfrenta aposta")  # acao, tamanho, situacao
+    assert (hj[C["situacao"]], hj[C["tamanho_enfrentado"]]) == ("enfrenta aposta", 0.25)  # o HJ ainda enfrenta a bet de 16 em 64, nao um "raise"
     assert hj_turn[decisoes.COL["enf_flop"]] == 0.25  # e o tamanho que ele pagou no flop e 0,25, nao negativo
+    # ordem de acao entre os vivos do comeco da rua: o UTG+1 all-in continua contando no turn, o HJ e o 3º
+    assert [x[C["ordem_rua"]] for x in r] == [1, 2, 3, 3]
     assert r[0][decisoes.COL_RESPOSTA] == "pago"
 
 
@@ -294,7 +298,8 @@ def test_mda_flop_do_gabarito(con):
     # checaram e enfrentam: SB, BB, UTG foldam e UTG+1 da raise contra 0,336; MP e HJ foldam contra o raise de 0,5
     enf = flop[("X", "enfrenta")]["enfrentado"]
     assert enf == {"0,21–0,40": {"Fold": 3, "Raise": 1, "precisa": pytest.approx(4 * 0.336 / 1.336)},
-                   "0,41–0,60": {"Fold": 2, "precisa": pytest.approx(2 * 0.5 / 1.5)}}
+                   # o check-raise do UTG+1 para 75 num pote de 85,5 arrisca 75 / 85,5 = 0,877 (o tamanho 0,5 so agrupa)
+                   "0,41–0,60": {"Fold": 2, "precisa": pytest.approx(2 * 0.877 / 1.877)}}
     # so o BTN: as acoes dele no flop
     btn = servidor.mda(con, {"filtros": {"pos": ["BTN"]}})["flop"]
     assert [(n["atual"], n["situ"], n["acoes"]) for n in btn] == [("", "enfrenta", {"Fold": 1})]
@@ -304,5 +309,29 @@ def test_mda_caminho_vira_filtro():
     c = {"flop": {"linha": "B", "faixa": "0,46–0,66", "lado": "aposta"}, "turn": {"linha": "XC", "faixa": "0,67–0,85", "lado": "pagou"}}
     assert servidor._caminho(c, "flop") == {}
     assert servidor._caminho(c, "turn") == {"linha_flop": ["B"], "tam_flop": ["0,46–0,66"]}
+    # varias faixas no mesmo passo: o conjunto delas
+    duas = {"flop": {"linha": "B", "faixa": ["0,00–0,20", "0,21–0,40"], "lado": "aposta"}}
+    assert servidor._caminho(duas, "turn") == {"linha_flop": ["B"], "tam_flop": ["0,00–0,20", "0,21–0,40"]}
     assert servidor._caminho(c, "river") == {"linha_flop": ["B"], "tam_flop": ["0,46–0,66"],
                                              "linha_turn": ["XC"], "enf_turn": ["0,67–0,85"]}
+
+
+def test_ruas_da_mao_conta_a_historia_street_por_street():
+    jog = {p: {"stack": 100, "cartas": None, "hero": 0, "ordem": i} for i, p in enumerate(("SB", "BTN"), 1)}
+    acoes = [("flop", "SB", "Check", None, 0, 16.0), ("flop", "BTN", "Bet", 4.0, 0, 16.0),
+             ("flop", "SB", "Raise", 12.0, 0, 20.0), ("flop", "BTN", "Call", 8.0, 0, 32.0),
+             ("turn", "SB", "Bet", 10.0, 0, 40.0), ("turn", "BTN", "Fold", None, 0, 50.0)]
+    flop, turn = [dict(zip(["hand_id", "rua", "n_jogadores", "n_vivos", "data", "acao", "pos1", "tam1", "allin1",
+                            "mesmo_agressor", "aumento", "pos_raise", "raise_x", "n_raises", "fim", "raise_risco", "n_calls", "reraise_x", "reraise_risco"], r))
+                  for r in decisoes.ruas_da_mao("x", 2, acoes, jog)]
+    assert (flop["acao"], flop["pos1"], flop["tam1"], flop["aumento"], flop["pos_raise"], flop["raise_x"], flop["fim"]) == \
+        (1, "BTN", 0.25, 1, "SB", 3.0, "pago")
+    assert flop["mesmo_agressor"] is None  # no flop nao ha street anterior
+    # raise para 12 sobre a bet de 4 (pote 20 antes dele): o blefe poe 12 para ganhar 20 -> risco 0,6, precisa 0,6/1,6
+    assert flop["raise_risco"] == 0.6 and flop["n_calls"] == 1 and turn["n_calls"] == 0
+    assert (turn["pos1"], turn["mesmo_agressor"], turn["aumento"], turn["fim"]) == ("SB", 1, 0, "levou")
+    # re-raise: BTN aposta 4 em 16, SB vai a 12, BTN volta a 36 (3x o raise; poe 32 num pote de 32 = risco 1) e o SB paga
+    rr = decisoes.ruas_da_mao("x", 2, acoes[:3] + [("flop", "BTN", "Raise", 36.0, 0, 32.0), ("flop", "SB", "Call", 24.0, 0, 64.0)], jog)[0]
+    assert (rr[13], rr[14], rr[16], rr[17], rr[18]) == (2, "pago", 1, 3.0, 1.0)  # n_raises, fim, n_calls, reraise_x, risco
+    so_check = decisoes.ruas_da_mao("x", 2, [("flop", "SB", "Check", None, 0, 16.0), ("flop", "BTN", "Check", None, 0, 16.0)], jog)
+    assert so_check[0][5:8] == (0, None, None)

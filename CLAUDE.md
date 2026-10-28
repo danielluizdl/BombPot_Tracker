@@ -9,7 +9,8 @@ Tracker de bomb pots do WPT Global: print -> mão (via `wptparse` do
 ```
 tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar / refazer / aceitar / auditar.
                Cada mao guarda versao_leitor (VERSAO-commit do Replayer, +sujo), sha256 e mtime do PNG e a pior
-               distancia de template das cartas (pior_rank/pior_naipe). UNIQUE(png): um print, uma mao.
+               distancia de template das cartas (pior_rank/pior_naipe). UNIQUE(png): um print, uma mao. Prints em
+               processadas/ = ID_<hand id>.png; print de mao que ja esta no banco vai para repetidas/ (nao vira mao).
                refazer NUNCA mexe no banco: rele processadas/+recusadas/ para bombpot_novo.db (+hh_novo/) e escreve
                refazer_<versao>.txt com o diff; aceitar audita, copia o banco (bombpot_antes_aceitar.db), troca as 4
                tabelas da leitura numa transacao, move os prints que mudaram de pasta e grava REPLAYER_OK.
@@ -18,13 +19,23 @@ auditar.py     invariantes de todas as maos (acao ilegal, cartas repetidas, sald
                ausente, leitor nao aceito...); informativas: cartas duvidosas, hora estranha, excluidas
 decisoes.py    tabela derivada `decisoes`: uma linha por decisao pos-flop, com contexto, forca,
                resposta da mesa, lucro, linhas, texturas e data; mao com erro conferido fica fora (SEM_ERRO)
+               + tabela `ruas` (`ruas_da_mao`): por mao e street, a 1a bet (quem, tamanho), o 1o raise em vezes a bet, o
+               re-raise em vezes o raise, quantos pagaram,
+               se foi do agressor anterior e como terminou -- o filtro do Estudo
 forca.py       categorias de forca do H2N + draws + weak (puro, test_forca.py)
+checa_txt.py   o .txt (PokerStars) relido como um importador leria: linhas pelas regras do formato, pote, devolucao,
+               all-in sem sobra e quem recolhe pelas cartas; test_banco_real exige todo hh/maos/*.txt limpo
+               (28/out: 348 de 1.679 nao fechavam -> 0, com o export do Replayer corrigido)
 resultados.py  tabela derivada `resultados` (aba Jogadores): net, showdown e EV all-in (equity exata) por nick;
                nick em jogadores.nome (aliases confirmados juntam nicks); mao com seguro/jackpot entra jogador a
                jogador (saldo conferido pelas cartas; jackpot a parte; quem o seguro pagou e perdeu tudo = -investido)
-servidor.py    site local (127.0.0.1:8770): filtros -> WHERE em `decisoes`; painel, agrupar, exportar;
+servidor.py    site local (127.0.0.1:8770): Estudo = `linha()` (a historia da mao sobre `ruas`: cada botao com a
+               contagem das outras respostas valendo; `maos_da_linha`); painel, exportar;
                aba MDA (`mda()`); Voce x populacao (`leaks()`); aba Conferir (`conferir()`/`marcar()`, taxa de erro
-               Clopper-Pearson so das sorteadas); selo (`saude()`); refaz as derivadas por PRAGMA data_version;
+               Clopper-Pearson so das sorteadas); selo (`saude()`); refaz as derivadas por PRAGMA data_version, so se a
+               `impressao()` (tabelas lidas + codigo) mudou (tabela `derivadas`); aba Meus leaks = `spots(leaks())`;
+               aba Conferir modo .txt (`conferir_txt`/`parecer_txt`): a fila `fila_txt.json` (fora do git) com o achado,
+               o .txt de antes e o de agora; o parecer vai para `pareceres_txt` (nao entra na taxa de erro);
                Ver mãos (`maos()`: Estudo ou nó da MDA, 10 por vez, todas até 1.000) e replayer (`mao()`/`quadros()`:
                cada estado da mesa em BB, com os quirks do WPT normalizados; o pop-up mostra o print ao lado)
 public/        a tela (HTML/JS puro, tema do DESIGN.md do MetaLens)
@@ -33,7 +44,7 @@ test_banco_real.py  refaz as contas do site direto da tabela acoes (independente
 ```
 
 Dado humano (o refazer nao recria; vai para `conferencias_bombpot.json` em `BOMBPOT_COPIA`): tabelas
-`conferencias` (o que a leitura dizia quando o dono conferiu: mao conferida que muda trava o aceitar) e `aliases`.
+`pareceres_txt`, `conferencias` (o que a leitura dizia quando o dono conferiu: mao conferida que muda trava o aceitar) e `aliases`.
 
 Upgrade do Replayer: `python tracker.py refazer` -> ler o refazer_*.txt -> `python tracker.py aceitar`.
 
@@ -62,6 +73,9 @@ Quirks do WPT:
 - "Call $0.00" sem aposta na mesa e check (ID_1318375308628545536, turn e river);
 - na unidade BB a tela converte e arredonda: abaixo de 100 BB ja erra 0,1 (ID_1311798473139392512: raise 13,40,
   calls 13,40, saldo -21,30) e a partir de 100 BB mostra sem decimal (ate 0,5 por valor). Em moeda e exata;
+- EV do blefe e "precisa foldar" usam o RISCO da agressao (`decisoes.risco`, `ruas.raise_risco`): o que ele poe na hora /
+  pote antes dele. Na bet e o tamanho; no raise inclui o call embutido (bet 10 em 100, raise para 30 = 30/110 -> precisa 21%,
+  nao o "tamanho" de 20/120). O tamanho do raise (aumento / (pote + call)) so agrupa as faixas;
 - -1 BB no saldo de quem GANHOU cabe no rake (ate 3,1 BB): nenhuma checagem pega; no perdedor a conta e exata.
 
 Ao escrever Python por heredoc no Bash desta maquina, `\\r`/`\\n` dentro de string viraram caracteres de

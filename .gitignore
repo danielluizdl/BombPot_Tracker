@@ -5,6 +5,7 @@ refazer_*.txt
 entrada/
 processadas/
 recusadas/
+repetidas/
 hh/
 hh_novo/
 dados_wpt/
@@ -17,3 +18,5 @@ __pycache__/
 conferencias_bombpot.json
 pareceres_nicks.json
 nicks_pendentes/
+renomeados_*.json
+fila_txt.json

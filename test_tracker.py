@@ -76,7 +76,8 @@ def test_processar_grava_move_e_nao_duplica(tmp_path):
     assert con.execute("SELECT count(*) FROM hands").fetchone() == (1,)
     assert con.execute("SELECT count(*) FROM acoes").fetchone() == (16,)
     assert (tmp_path / "hh" / "maos" / "1311804268404871168.txt").is_file()
-    assert sorted(p.name for p in (tmp_path / "processadas").iterdir()) == ["a.png", "b.png"]
+    assert sorted(p.name for p in (tmp_path / "processadas").iterdir()) == ["a.png"]
+    assert sorted(p.name for p in (tmp_path / "repetidas").iterdir()) == ["ID_1311804268404871168.png"]  # a copia, pelo id
     assert not any((tmp_path / "entrada").iterdir())
 
 

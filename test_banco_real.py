@@ -226,22 +226,23 @@ def _arvore_independente(con, rua_alvo, pos_filtro=None):
                 elif verbo == "Call" and not apostou and not valor:  # "Call $0.00" sem aposta: check
                     verbo = "Check"
                 situ = "livre" if maior == 0 else "enfrenta"
-                tam = None
+                tam = risco = None
                 if verbo == "Bet":
-                    tam = round(valor / pote, 3)
+                    tam = risco = round(valor / pote, 3)
                     investido[pos], maior, apostou = valor, valor, True
                 elif verbo == "Raise":
                     tam = round((valor - maior) / (pote + maior - investido[pos]), 3)
+                    risco = round((valor - investido[pos]) / pote, 3)  # o blefe de raise arrisca o call embutido tambem
                     investido[pos], maior = valor, valor
                 elif verbo == "Call":
                     investido[pos] = max(investido[pos], valor) if item[1] == "Raise" or allin else investido[pos] + valor
-                eventos.append((pos, verbo, letras[pos], situ, tam, allin))
+                eventos.append((pos, verbo, letras[pos], situ, tam, allin, risco))
                 letras[pos] += LETRA[verbo]
             finais[rua] = dict(letras)
             if rua != rua_alvo:
                 continue
             anteriores = RUAS[:RUAS.index(rua)]
-            for k, (pos, verbo, atual, situ, tam, allin) in enumerate(eventos):
+            for k, (pos, verbo, atual, situ, tam, allin, risco) in enumerate(eventos):
                 if pos_filtro and pos != pos_filtro:
                     continue
                 prefixo = tuple(x for x in (finais[r].get(pos) for r in anteriores) if x is not None)
@@ -263,8 +264,8 @@ def _arvore_independente(con, rua_alvo, pos_filtro=None):
                 d["n"] += 1
                 if resto:  # a mesa respondeu: EV do blefe = +1 pote se todos foldam, -a bet se nao
                     d["respondidas"] += 1
-                    d["tam"] += tam
-                    d["ev"] += 1.0 if not calls and not levou_raise else -tam
+                    d["tam"] += risco
+                    d["ev"] += 1.0 if not calls and not levou_raise else -risco
                 if levou_raise:
                     d["aumentado"] += 1
                     if prox in d["depois"]:
@@ -316,3 +317,19 @@ def test_mda_afunilar_bate_com_sql_direto(con):
     direto = con.execute("SELECT count(*) FROM decisoes WHERE rua = 'turn' AND linha_flop = 'B' "
                          "AND tam_flop > 0.40 AND tam_flop <= 0.60").fetchone()[0]
     assert sum(n["n"] for n in turn) == direto > 0
+
+
+def test_todo_txt_do_banco_fecha_pelas_regras_do_pokerstars(con):
+    """O .txt de cada mao (o que vai para o H2N) relido como um importador leria (checa_txt): linhas pelas regras do
+    formato, pote, devolucao, all-in sem sobra e quem recolhe pelas cartas. Em 28/out 348 dos 1.679 nao fechavam
+    (raises $0, side pot virando rake, all-in com centavos sobrando); o Replayer foi corrigido e isto trava a volta."""
+    import checa_txt
+
+    pasta = Path(__file__).parent / "hh" / "maos"
+    ids = [h for (h,) in con.execute("SELECT id FROM hands")]
+    ruins = {}
+    for hid in ids:
+        arq = pasta / f"{hid}.txt"
+        if arq.is_file() and (erros := checa_txt.problemas(arq.read_text(encoding="utf-8"))):
+            ruins[hid] = erros
+    assert not ruins, f"{len(ruins)} .txt nao fecham, ex.: {next(iter(ruins.items()))}"

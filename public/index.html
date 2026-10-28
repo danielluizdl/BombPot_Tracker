@@ -35,8 +35,6 @@ select, .btn { background: var(--card); border: 1px solid var(--line); border-ra
 .btn.primario { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 
 [hidden] { display: none !important; }
-/* --- barra de comando --- */
-#comando { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding: 14px 18px; border-bottom: 1px solid var(--line); background: #14161b; }
 .grupo-cmd { display: flex; flex-direction: column; gap: 4px; }
 .grupo-cmd > span { font-size: 11px; color: var(--muted); padding-left: 2px; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--card); }
@@ -45,7 +43,6 @@ select, .btn { background: var(--card); border: 1px solid var(--line); border-ra
 .seg button:hover { color: var(--text); }
 .seg button[aria-pressed="true"] { background: var(--card-2); color: var(--accent); font-weight: 600; }
 .cmd-linha select { min-width: 150px; }
-#comando .fim { margin-left: auto; display: flex; gap: 8px; }
 #ativos { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 18px 0; min-height: 30px; }
 .pilula { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); background: var(--card); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12px; }
 .pilula button { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 2px 6px; border-radius: 999px; }
@@ -84,7 +81,8 @@ thead th[title] { cursor: help; text-decoration: underline dotted var(--dim); te
 tbody tr:hover { background: #1d2128; }
 tr.geral th { color: var(--accent); }
 tr.linha-a th { color: var(--c); }
-td.fraca, td .fraca { opacity: .45; }
+/* número de amostra pequena (< 30): cinza, sem a cor de bom/ruim */
+td.fraca, td .fraca, td.fraca *, .fraca { color: var(--dim) !important; }
 .amostra b { font-size: 14px; } .amostra small { color: var(--muted); display: block; font-size: 11px; }
 .pilha { display: flex; height: 18px; width: 240px; border-radius: 4px; overflow: hidden; background: var(--card-2); }
 .pilha span { height: 100%; font-size: 11px; line-height: 18px; text-align: center; color: #0e1013; font-weight: 600; overflow: hidden; }
@@ -165,7 +163,11 @@ td.fraca, td .fraca { opacity: .45; }
 .mda-linha .rot { font-weight: 600; letter-spacing: .3px; }
 .mda-linha small { color: var(--muted); font-size: 11px; text-align: right; }
 .mda-pequenos summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 8px 8px 4px; }
-.mda-detalhe { margin-top: 14px; padding: 12px 14px; }
+/* o detalhe da linha clicada fica preso no pé da tela até a página chegar nele: aparece sem rolar */
+.mda-detalhe { margin-top: 14px; padding: 12px 14px; position: sticky; bottom: 0; z-index: 4; max-height: 58vh; overflow: auto;
+  border-color: var(--line-2); box-shadow: 0 -12px 28px rgba(0, 0, 0, .55); }
+.mda-legenda { display: flex; gap: 6px 16px; flex-wrap: wrap; padding: 0; }
+.mda-legenda b { color: var(--text); font-family: Consolas, monospace; }
 .mda-busca { position: relative; }
 .mda-busca input { width: 220px; padding: 7px 10px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
   font-weight: 600; letter-spacing: .3px; }
@@ -181,6 +183,9 @@ td.fraca, td .fraca { opacity: .45; }
 .mda-sel { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .mda-sel select { background: var(--card-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .mda-sel.ativo select { border-color: var(--accent); color: var(--accent); }
+.mda-sel { flex-wrap: wrap; } .mda-sel .chip small { color: var(--muted); font-size: 10.5px; }
+.mda-sel .chip[aria-pressed="true"] small { color: var(--accent); }
+.mda-detalhe tr.geral th, .mda-detalhe tr.geral td { border-bottom: 2px solid var(--line-2); }
 .mda-detalhe-cab { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .mda-detalhe-cab h3 { margin: 0; font-size: 18px; } .mda-detalhe-cab h3 small { color: var(--muted); font-weight: 400; font-size: 12px; }
 span.destaque { color: var(--accent); font-weight: 600; }
@@ -222,17 +227,7 @@ b.destaque { color: var(--accent); }
 .painel-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
 tr.clicavel { cursor: pointer; }
 
-/* --- gaveta de filtros --- */
-#fundo { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 9; }
-#avancado { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); background: #15181d; border-left: 1px solid var(--line);
-  z-index: 10; overflow-y: auto; transform: translateX(100%); transition: transform .15s ease-out; }
-#avancado.aberto { transform: none; }
-#avancado header { position: sticky; top: 0; background: #15181d; z-index: 1; }
-.cartao-f { margin: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
-.cartao-f h3 { margin: 0 0 4px; font-size: 13px; }
-.cartao-f p.ex { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
-.filtro { padding: 6px 0; }
-.filtro > label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+/* --- chips e faixa livre (tamanho da bet / do raise) --- */
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { border: 1px solid var(--line); background: var(--card-2); padding: 4px 9px; border-radius: 6px; cursor: pointer; min-height: 28px; }
 .chip:hover { border-color: var(--line-2); }
@@ -256,7 +251,8 @@ details.explica summary { cursor: pointer; color: var(--accent); padding: 4px 0;
 details.explica p { margin: 6px 0; line-height: 1.5; }
 
 @media (max-width: 760px) {
-  #comando .fim { margin-left: 0; }
+  header .direita { max-width: 100%; } header .direita select { max-width: 100%; min-width: 0; }
+  .seg { flex-wrap: wrap; }  /* 9 posições não cabem em 390 px: quebra em vez de rolar a página de lado */
   .mesa { height: 320px; } .feltro { inset: 46px 34px; } .assento { width: 92px; }
   .pilha { width: 160px; }
 }
@@ -273,6 +269,10 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 .conf-topo .placar b { color: var(--text); }
 .conf-grade { display: grid; grid-template-columns: minmax(280px, 430px) minmax(0, 1fr); gap: 14px; align-items: start; }
 @media (max-width: 900px) { .conf-grade { grid-template-columns: 1fr; } }
+.conf-grade.largo { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.conf-lado { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.conf-barra-print { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.conf-barra-print a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .conf-print { max-height: 82vh; overflow: auto; background: #000; }
 .conf-print img { width: 100%; display: block; }
 .conf-mao { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -289,6 +289,10 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 .conf-acoes select, .conf-acoes input { min-height: 34px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .btn.erro { border-color: var(--ruim); color: var(--ruim); }
 .nicks-prints { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.conf-mao h4 { margin: 4px 0 0; font-size: 13px; }
+.txt-achados li { color: var(--text); }
+.txt-mao { margin: 6px 0 0; padding: 10px 12px; background: #101216; border: 1px solid var(--line); border-radius: 6px; max-height: 420px;
+  overflow: auto; font: 12px/1.5 Consolas, monospace; color: var(--text); white-space: pre; }
 
 /* --- ver mãos: uma decisão por linha, como a lista de mãos do H2N --- */
 .ver-maos { display: flex; flex-direction: column; gap: 10px; }
@@ -359,6 +363,38 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
 @media (max-width: 760px) { .rp-mesa { height: 380px; margin: 26px 6px 34px; } .rp-feltro { inset: 46px 30px; } .rp-assento { width: 92px; } }
 @media (max-width: 900px) { .nicks-prints { grid-template-columns: 1fr; } }
 
+.cmd-datas input { width: 140px; min-height: 34px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color-scheme: dark; }
+.frase p { margin: 0; padding: 12px 16px; font-size: 14px; line-height: 1.6; }
+.leaks td div { line-height: 1.5; } .leaks td small, .leaks th small { color: var(--muted); font-weight: 400; }
+
+/* --- Estudo: a linha da mão, pergunta por pergunta --- */
+.frase-linha { margin: 0; font-size: 14px; line-height: 1.5; } .frase-linha b { color: var(--accent); }
+.perguntas { padding: 0 0 12px; }
+.perguntas > h2 { margin-bottom: 4px; }
+.pergunta { padding: 10px 16px 4px; display: flex; flex-direction: column; gap: 6px; }
+.pergunta-tit { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.pergunta-tit > b { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+  align-items: center; justify-content: center; font-size: 12px; }
+.ajuda { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-2); color: var(--muted);
+  align-items: center; justify-content: center; font-size: 11px; cursor: help; font-weight: 600; }
+.ajuda:hover, .ajuda:focus { color: var(--accent); border-color: var(--accent); }
+.pergunta .seg { flex-wrap: wrap; width: fit-content; max-width: 100%; }
+.pergunta .seg button small { color: var(--dim); font-weight: 400; margin-left: 2px; }
+.pergunta .seg button[aria-pressed="true"] small { color: var(--accent); }
+.pergunta .seg button:disabled { opacity: .35; cursor: default; }
+.pergunta .faixa-livre { max-width: 520px; }
+.recorte { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; padding: 8px 16px 0; }
+.resposta-linha { padding: 8px 16px 0; }
+.pergunta .seg button .intervalo { color: var(--muted); font-size: 11px; }
+.pergunta .seg button[aria-pressed="true"] .intervalo { color: var(--text); }
+.grade-resp th small.intervalo-th { display: block; color: var(--muted); font-size: 10px; font-weight: 400; }
+.resposta-linha .vistas-resp { margin: 6px 0 8px; width: fit-content; }
+.resposta-linha tr.geral th, .resposta-linha tr.geral td { border-bottom: 2px solid var(--line-2); }
+.grade-resp th, .grade-resp td { padding: 6px 8px; text-align: center; }
+.grade-resp tbody th { text-align: left; }
+.grade-resp td.casa b { display: block; font-size: 13px; }
+.grade-resp td.casa small { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+
 /* --- hero x população, sugestões de nick --- */
 .leaks td.z { color: var(--muted); }
 .leaks tr.sig th { color: var(--text); }
@@ -376,31 +412,23 @@ details.explica p { margin: 6px 0; line-height: 1.5; }
   <span class="info num" id="info">carregando…</span>
   <div class="abas" role="tablist">
     <button role="tab" id="aba-estudo" aria-selected="true">Estudo</button>
-    <button role="tab" id="aba-painel" aria-selected="false">Painel de tendências</button>
+    <button role="tab" id="aba-painel" aria-selected="false" title="Onde você joga diferente do field, e quanto custa; embaixo, as stats prontas do field">Meus leaks</button>
     <button role="tab" id="aba-mda" aria-selected="false">MDA</button>
     <button role="tab" id="aba-jogadores" aria-selected="false">Jogadores</button>
     <button role="tab" id="aba-conferir" aria-selected="false">Conferir</button>
   </div>
-  <div class="direita">
-    <select id="presets" aria-label="Filtros prontos"><option value="">Filtros prontos…</option></select>
-    <select id="salvos" aria-label="Meus filtros"><option value="">Meus filtros…</option></select>
-    <button class="btn" id="salvar">Salvar filtro</button>
-    <button class="btn" id="fixarA" title="Guarda o filtro atual como A; a grade mostra A em cima para comparar">Fixar como A</button>
-    <button class="btn" id="exportar" title="As mãos do filtro, em .txt para importar no H2N">Exportar .txt</button>
+  <div class="direita" id="ferramentas">
+    <select id="salvos" aria-label="Minhas linhas"><option value="">Minhas linhas…</option></select>
+    <button class="btn" id="salvar">Salvar linha</button>
+    <button class="btn" id="exportar" title="As mãos da linha, em .txt para importar no H2N">Exportar .txt</button>
   </div>
 </header>
-<section id="comando" aria-label="Spot"></section>
 <div id="ativos"></div>
 <main id="estudo"></main>
 <main id="painel" hidden></main>
 <main id="mda" hidden></main>
 <main id="jogadores" hidden></main>
 <main id="conferir" hidden></main>
-<div id="fundo" hidden></div>
-<aside id="avancado" aria-label="Mais filtros">
-  <header><div class="logo">Mais filtros</div><div class="direita"><button class="btn" id="fechar-avancado">Fechar</button></div></header>
-  <div id="avancado-corpo"></div>
-</aside>
 <script type="module" src="app.js"></script>
 </body>
 </html>

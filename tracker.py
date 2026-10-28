@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS nicks_conferidos (nick TEXT PRIMARY KEY, fonte TEXT, 
 -- queixas daquele momento (uma por linha); leitor que reclamar de outra coisa recusa de novo
 CREATE TABLE IF NOT EXISTS liberadas (sha256 TEXT PRIMARY KEY, png TEXT NOT NULL, issues TEXT NOT NULL,
   motivo TEXT NOT NULL, quem TEXT NOT NULL, quando TEXT NOT NULL);
+-- parecer do dono sobre a transcricao da mao para o .txt (aba Conferir, modo .txt): a leitura certa e o arquivo errado
+-- sao coisas diferentes, entao isto nao entra na taxa de erro nem tira a mao do estudo
+CREATE TABLE IF NOT EXISTS pareceres_txt (hand_id TEXT PRIMARY KEY, ok INTEGER NOT NULL, obs TEXT, quando TEXT NOT NULL);
 """
 # colunas que bancos antigos nao tem (o CREATE TABLE IF NOT EXISTS nao as acrescenta)
 COLUNAS_NOVAS = {"hands": ("obs TEXT", "versao_leitor TEXT", "sha256 TEXT", "mtime TEXT", "pior_rank REAL", "notas TEXT"),
@@ -331,10 +334,11 @@ def registrar(png: Path, hand, resultado, con: sqlite3.Connection, raiz: Path = 
         mover(png, destino)
         return resultado
     mao, acoes, jogadores = resultado
-    destino = destino_livre(png, raiz / "processadas")
     if con.execute("SELECT 1 FROM hands WHERE id = ?", (mao[0],)).fetchone():
-        mover(png, destino)
+        # o mesmo print salvo de novo: fica em repetidas/ (processadas/ tem um print por mao, a contagem bate com o app)
+        mover(png, destino_livre(png.with_name(f"ID_{mao[0]}.png"), raiz / "repetidas"))
         return "repetida"
+    destino = destino_livre(png, raiz / "processadas")
     with con:  # o banco guarda o nome com que o PNG fica em processadas/ (o /print/ do site procura por ele)
         gravar_linhas(con, (mao[0], destino.name, *mao[2:]), acoes, jogadores)
         con.execute("DELETE FROM recusas WHERE png = ?", (png.name,))

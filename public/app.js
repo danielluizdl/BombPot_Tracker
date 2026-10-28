@@ -1,4 +1,4 @@
-// BombPot Tracker, no formato do SnapMDA: barra de comando (o spot) -> POST /api/consulta -> grade de relatório.
+// BombPot Tracker: o Estudo filtra a história da mão (POST /api/linha); MDA, Meus leaks, Jogadores e Conferir têm os seus.
 // Hero e população entram juntos em tudo.
 
 // ---------------------------------------------------------------------------------------------- base
@@ -36,570 +36,335 @@ const tituloIC = (n, total) => {
     + (total < AMOSTRA_MINIMA ? ' · amostra pequena' : '');
 };
 
-const SIM_NAO = { 1: 'Sim', 0: 'Não' };
 const PALAVRA = { X: 'check', B: 'bet', C: 'call', R: 'raise', F: 'fold' };
 const linhaEmPalavras = v => String(v).split('').map(l => PALAVRA[l] ?? l).join('-');
 const ACOES = ['Check', 'Bet', 'Call', 'Raise', 'Fold'];
-const COR = { Check: 'var(--x)', Bet: 'var(--b)', Call: 'var(--c)', Raise: 'var(--r)', Fold: 'var(--f)' };
-const SITUACAO = { livre: 'ninguém apostou', 'enfrenta aposta': 'enfrenta bet', 'enfrenta raise': 'enfrenta raise' };
-// Ordem de leitura de poker (não alfabética); o resto vai ao fim. Força e draws entram ao carregar as opções.
-const ORDEM = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN', 'flop', 'turn', 'river',
-  'livre', 'enfrenta aposta', 'enfrenta raise', '1º a agir', 'meio', 'último', ...ACOES,
-  'rainbow', 'two-tone', 'monotone', 'A', 'K', 'Q', 'J', 'T-', 1, 0];
-const ordenar = (vs, col) => {
-  const ordem = col === 'n_jogadores' ? [8, 7, 6, 5, 4, 3, 2] : ORDEM;
-  return [...vs].sort((a, b) => (ordem.indexOf(a) + 1 || 999) - (ordem.indexOf(b) + 1 || 999));
-};
+const ou = xs => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} ou ${xs[xs.length - 1]}` : xs[0]);
 
 let opcoes = null;
-let filtros = {};
+let filtros = lerLocal('bp.filtros') ?? {};  // os filtros da MDA (posição e mesa) e do painel
 const cod = faixa => opcoes?.codigos?.[faixa] ?? faixa;  // "0,46–0,66" -> "B50"
 
-// ------------------------------------------------------------------------- definição dos filtros
-// [coluna, nome, tipo, rótulos]. tipo: lista (chips), faixa (mín/máx), faixas (tamanhos), tags, datas.
-
-const DEF = {};
-const def = (col, nome, tipo, rot) => (DEF[col] = [col, nome, tipo, rot]);
-def('rua', 'Rua', 'lista');
-def('situacao', 'Situação', 'lista', SITUACAO);
-def('ip', 'Posição na rua', 'lista', { 1: 'IP (último)', 0: 'OOP' });
-def('n_jogadores', 'Jogadores na mão', 'faixa');
-def('pos', 'Posição', 'lista');
-def('linha_flop', 'Flop · o que ele fez', 'lista', linhaEmPalavras);
-def('tam_flop', 'Flop · tamanho da bet dele', 'faixas');
-def('linha_turn', 'Turn · o que ele fez', 'lista', linhaEmPalavras);
-def('tam_turn', 'Turn · tamanho da bet dele', 'faixas');
-def('enf_flop', 'Flop · tamanho da bet que ele pagou', 'faixas');
-def('enf_turn', 'Turn · tamanho da bet que ele pagou', 'faixas');
-def('hero', 'Quem', 'lista', { 0: 'População', 1: 'Hero' });
-
-// Os cartões da gaveta "Mais filtros" (o que não está na barra de comando).
-const CARTOES = [
-  ['Na rua', 'O que acontece nesta rua, antes e na decisão dele.', [
-    def('pos_rel', 'Ordem na rua', 'lista'),
-    def('decisao_n', 'Vez que age na rua', 'lista', { 1: '1ª', 2: '2ª', 3: '3ª', 4: '4ª', 5: '5ª' }),
-    def('checou_antes', 'Checou antes nesta rua (check-raise / check-call)', 'lista', SIM_NAO),
-    def('tamanho_enfrentado', 'Tamanho da bet que ele enfrenta', 'faixas'),
-    def('acao', 'Ação dele', 'lista'),
-    def('tamanho', 'Tamanho da bet dele nesta rua', 'faixas'),
-    def('allin', 'All-in', 'lista', SIM_NAO),
-  ]],
-  ['Linha anterior', 'Como a mão chegou até aqui. Aqui dá para marcar vários tamanhos (ex.: B5 e B10 = 0,01–0,15).', [
-    DEF.linha_flop, DEF.tam_flop, DEF.enf_flop, DEF.linha_turn, DEF.tam_turn, DEF.enf_turn,
-    def('agressor_anterior', 'Foi o agressor da rua anterior', 'lista', SIM_NAO),
-    def('rua_anterior_checada', 'Rua anterior checada por todos', 'lista', SIM_NAO),
-    def('acao_anterior', 'O que ele fez por último na rua anterior', 'lista'),
-  ]],
-  ['Mão', 'Força nas categorias do H2N. Cartas só são conhecidas do Hero e de quem mostrou no showdown.', [
-    def('forca', 'Força da mão nesta rua', 'lista'),
-    def('draw', 'Draw (flop e turn)', 'lista'),
-    def('weak', 'Mão weak (blefe / ar)', 'lista', SIM_NAO),
-  ]],
-  ['Board', 'Texturas não exclusivas, como no H2N.', [
-    def('naipes_flop', 'Naipes do flop', 'lista'),
-    def('flop_alta', 'Carta mais alta do flop', 'lista'),
-    def('flop_pareado', 'Flop pareado', 'lista', SIM_NAO),
-    def('flop_conectado', 'Flop conectado', 'lista', SIM_NAO),
-    def('board_pareado', 'Board pareado até esta rua', 'lista', SIM_NAO),
-    def('board_flush', 'Flush possível até esta rua', 'lista', SIM_NAO),
-    def('texturas', 'Carta do turn / river (qualquer uma das marcadas)', 'tags'),
-  ]],
-  ['Mesa e stacks', '', [
-    def('n_vivos', 'Ainda na mão no começo da rua', 'faixa'),
-    def('pote', 'Pote antes da ação (BB)', 'faixa'),
-    def('spr', 'SPR (stack efetivo ÷ pote da rua)', 'faixa'),
-    def('data', 'Período', 'datas'),
-  ]],
-  ['Resultado', '', [
-    def('resposta', 'O que a mesa fez depois da bet dele', 'lista'),
-    def('sd', 'Foi ao showdown', 'lista', SIM_NAO),
-    def('ganhou', 'Ganhou a mão', 'lista', SIM_NAO),
-    def('marcada', 'Mão com seguro/jackpot', 'lista', SIM_NAO),
-  ]],
-];
-
-const rotulo = (col, v) => {
-  if (['tamanho', 'tamanho_enfrentado', 'tam_flop', 'tam_turn', 'enf_flop', 'enf_turn'].includes(col)) return `${cod(v)} (${v})`;
-  const r = DEF[col]?.[3];
-  return (typeof r === 'function' ? r(v) : r?.[v]) ?? String(v);
-};
-const TAMANHOS = ['tamanho', 'tamanho_enfrentado', 'tam_flop', 'tam_turn', 'enf_flop', 'enf_turn'];
-const descreverValor = (col, v) => {
-  if (Array.isArray(v) && TAMANHOS.includes(col) && v.length === opcoes.faixas.length) return 'qualquer tamanho';
-  if (Array.isArray(v)) return v.map(x => rotulo(col, x)).join(', ');
-  if (TAMANHOS.includes(col)) return `${fmt(v.min || 0)} até ${v.max === '' || v.max === undefined ? 'sem teto' : fmt(v.max)} × pote`;
-  return `${v.min || '…'} a ${v.max || '…'}`;
-};
-
-// ------------------------------------------------------------------------- barra de comando (o spot)
-
-// O que cabe no seletor de linha de uma rua: [rótulo, letras, faixa do tamanho].
-function opcoesDeLinha() {
-  return [['qualquer coisa', null, null], ['check', 'X', null], ['check-call', 'XC', null], ['check-raise', 'XR', null],
-    ['call', 'C', null], ['raise', 'R', null], ['bet (qualquer tamanho), foi pago', 'B', null],
-    ...opcoes.faixas.map(f => [`bet ${cod(f)} (${f}), foi pago`, 'B', f]),
-    ['bet e pagou um raise', 'BC', null]];
-}
-
-function seletorLinha(rua) {
-  const cl = `linha_${rua}`, ct = `tam_${rua}`;
-  const atualL = filtros[cl], atualT = filtros[ct];
-  const ops = opcoesDeLinha();
-  const idx = ops.findIndex(([, l, t]) => (l === null ? !atualL && !atualT
-    : atualL?.length === 1 && atualL[0] === l && (t ? atualT?.length === 1 && atualT[0] === t : !atualT)));
-  const s = el('select', { 'aria-label': `Linha no ${rua}` });
-  ops.forEach(([nome], i) => s.append(el('option', { value: i, textContent: nome, selected: i === idx })));
-  if (idx < 0) s.append(el('option', { value: -1, textContent: 'personalizado (Mais filtros)', selected: true }));
-  s.onchange = () => {
-    const [, l, t] = ops[Number(s.value)] ?? [];
-    delete filtros[cl];
-    delete filtros[ct];
-    if (l) filtros[cl] = [l];
-    if (t) filtros[ct] = [t];
-    mudou();
-  };
-  return el('label', { className: 'grupo-cmd cmd-linha' }, [el('span', { textContent: `Linha no ${rua}` }), s]);
-}
-
-// Botões segmentados. unico: clicar troca o valor (e clicar no ativo limpa); senão, marca vários.
-function segmentado(nome, col, valores, unico = true) {
-  const atual = new Set(filtros[col] ?? []);
-  const seg = el('div', { className: 'seg', role: 'group', 'aria-label': nome });
-  for (const [v, txt] of valores) {
-    seg.append(el('button', {
-      type: 'button', textContent: txt, ariaPressed: String(atual.has(v)),
-      onclick: () => {
-        if (unico) filtros[col] = atual.has(v) && atual.size === 1 ? [] : [v];
-        else { atual.has(v) ? atual.delete(v) : atual.add(v); filtros[col] = [...atual]; }
-        if (!filtros[col].length) delete filtros[col];
-        mudou();
-      },
-    }));
-  }
-  return el('div', { className: 'grupo-cmd' }, [el('span', { textContent: nome }), seg]);
-}
-
-function montarComando() {
-  const jog = filtros.n_jogadores;
-  const n = Array.isArray(jog) ? jog : null;
-  const segJog = el('div', { className: 'seg', role: 'group', 'aria-label': 'Jogadores' });
-  for (let k = 8; k >= 2; k--) {
-    segJog.append(el('button', {
-      type: 'button', textContent: String(k), ariaPressed: String(!!n?.includes(k)), title: `mesas com ${k} jogadores`,
-      onclick: () => {
-        const s = new Set(n ?? []);
-        s.has(k) ? s.delete(k) : s.add(k);
-        if (s.size) filtros.n_jogadores = [...s].sort((a, b) => b - a); else delete filtros.n_jogadores;
-        mudou();
-      },
-    }));
-  }
-  const rua = filtros.rua?.length === 1 ? filtros.rua[0] : null;
-  const extras = CARTOES.flatMap(([, , fs]) => fs).filter(f => filtros[f[0]] !== undefined).length;
-  $('comando').replaceChildren(...[
-    segmentado('Rua', 'rua', [['flop', 'Flop'], ['turn', 'Turn'], ['river', 'River']]),
-    segmentado('Situação', 'situacao', [['livre', 'Ninguém apostou'], ['enfrenta aposta', 'Enfrenta bet'], ['enfrenta raise', 'Enfrenta raise']]),
-    segmentado('Posição na rua', 'ip', [[0, 'OOP'], [1, 'IP']]),
-    el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Jogadores na mesa (marque vários)' }), segJog]),
-    rua !== 'flop' ? seletorLinha('flop') : null,
-    rua === 'river' || rua === null ? seletorLinha('turn') : null,
-    el('div', { className: 'fim' }, [
-      el('button', { className: 'btn', type: 'button', textContent: extras ? `Mais filtros (${extras})` : 'Mais filtros', onclick: abrirAvancado }),
-      el('button', { className: 'btn', type: 'button', textContent: 'Limpar', onclick: () => { filtros = {}; mudou(); } }),
-    ]),
-  ].filter(Boolean));  // os seletores de linha que não cabem nesta rua vêm null
-}
-
+// As pílulas da MDA (a posição e a mesa escolhidas na barra dela).
+const DEF = { pos: ['pos', 'Posição'], n_jogadores: ['n_jogadores', 'Jogadores na mesa'] };
 function mostrarAtivos() {
-  const box = $('ativos');
-  // na MDA, os filtros que a árvore controla não valem: não aparecem como pílula
-  const ativos = Object.entries(filtros).filter(([c]) => c !== '_agrupar' && DEF[c] && !(vista === 'mda' && DA_ARVORE.has(c)));
-  if (!ativos.length) { box.replaceChildren(el('span', { className: 'vazio', textContent: 'Sem filtros: todas as decisões de todas as mãos.' })); return; }
-  box.replaceChildren(...ativos.map(([col, v]) => el('span', { className: 'pilula' }, [
-    `${DEF[col][1]}: ${descreverValor(col, v)}`,
-    el('button', { type: 'button', textContent: '×', title: 'Tirar este filtro', onclick: () => { delete filtros[col]; mudou(); } })])));
+  const ativos = Object.entries(filtros).filter(([c, v]) => DEF[c] && Array.isArray(v) && v.length);
+  $('ativos').replaceChildren(...(ativos.length ? ativos.map(([col, v]) => el('span', { className: 'pilula' }, [
+    `${DEF[col][1]}: ${v.join(', ')}`,
+    el('button', { type: 'button', textContent: '×', title: 'Tirar este filtro', onclick: () => { delete filtros[col]; mudou(); } })]))
+    : [el('span', { className: 'vazio', textContent: 'Todas as posições e mesas.' })]));
 }
 
-// ------------------------------------------------------------------------- quadros minimizáveis
+// ------------------------------------------------------------------------- Estudo: a linha da mão
+// O filtro é a história da mão, street por street: em que street a action começou, quem fez a 1ª bet, de que tamanho,
+// se alguém aumentou (e de quanto) e como a street terminou. Cada botão mostra quantas mãos têm aquela resposta com as
+// outras respostas valendo (POST /api/linha); depois da 1ª street com action aparecem as seguintes.
 
-const abertos = lerLocal('bp.abertos') ?? {};
-function cartao(id, titulo, sub, corpo, extra = null) {
-  const det = el('details', { className: 'card', open: abertos[id] ?? true, ontoggle: e => {
-    abertos[id] = e.target.open;
-    gravarLocal('bp.abertos', abertos);
-  } });
-  det.dataset.cartao = id;
-  // controles (ex.: o "Dividir") ficam fora do cabeçalho: dentro dele, clicar neles abriria/fecharia o quadro
-  det.append(...[el('summary', {}, [el('span', { className: 'seta', textContent: '▾' }), titulo,
-    sub ? el('small', { textContent: sub }) : null]), extra ? el('div', { className: 'controles-card' }, [extra]) : null, ...corpo]
-    .filter(Boolean));
-  return det;
-}
-
-function minimizarTudo() {
-  const quadros = [...document.querySelectorAll('#estudo details.card')];
-  const fechar = quadros.some(d => d.open);
-  for (const d of quadros) { d.open = !fechar; abertos[d.dataset.cartao] = !fechar; }
-  gravarLocal('bp.abertos', abertos);
-  $('minimizar').textContent = fechar ? 'Abrir todos os quadros' : 'Minimizar tudo';
-}
-
-// ------------------------------------------------------------------------- relatório (a grade)
-
-const AGRUPAVEIS = ['pos', 'pos_rel', 'ip', 'n_jogadores', 'rua', 'situacao', 'tamanho', 'tamanho_enfrentado',
-  'tam_flop', 'tam_turn', 'enf_flop', 'enf_turn', 'linha_flop', 'linha_turn', 'forca', 'draw', 'naipes_flop', 'flop_alta', 'flop_pareado',
-  'board_pareado', 'board_flush', 'decisao_n', 'agressor_anterior', 'rua_anterior_checada'];
-
-function celAmostra(l) {
-  return el('td', { className: 'amostra' }, [el('b', { textContent: l.n.toLocaleString('pt-BR') }),
-    el('small', { textContent: `decisões · ${l.maos.toLocaleString('pt-BR')} mãos` })]);
-}
-
-function celAcoes(l) {
-  const pilha = el('div', { className: 'pilha' });
-  for (const a of ACOES) {
-    const p = l.n ? 100 * (l.acoes[a] ?? 0) / l.n : 0;
-    if (p > 0) pilha.append(el('span', { style: `width:${p}%;background:${COR[a]}`, textContent: p >= 9 ? `${Math.round(p)}%` : '',
-      title: `${a}: ${tituloIC(l.acoes[a] ?? 0, l.n)}` }));
-  }
-  return el('td', {}, [pilha]);
-}
-
-function celBetMais(l) {
-  const total = Object.values(l.bets).reduce((a, b) => a + b, 0);
-  if (!total) return el('td', { className: 'fraca', textContent: '—' });
-  const [faixa, n] = Object.entries(l.bets).sort((a, b) => b[1] - a[1])[0];
-  return el('td', { title: `das ${total} bets, ${tituloIC(n, total)}` }, [el('span', { className: 'tam' }, [
-    el('b', { textContent: cod(faixa) }), `${pct(n, total)}% das bets`])]);
-}
-
-function celWeak(l) {
-  const [fr, conh] = l.weak;
-  if (!conh) return el('td', { className: 'fraca', textContent: '—' });
-  const p = 100 * fr / conh;
-  return el('td', { className: conh < AMOSTRA_MINIMA ? 'fraca' : '', title: `mãos com cartas conhecidas: ${tituloIC(fr, conh)}` }, [
-    el('div', { className: 'weakbar' }, [el('span', { className: 'marca', style: `left:${p}%` }),
-      el('span', { className: 'rot', textContent: `${Math.round(p)}% weak · ${conh}` })])]);
-}
-
-function celResposta(l) {
-  const r = l.resposta, total = r['todos foldam'] + r.pago + r.aumentado;
-  if (!total) return [el('td', { className: 'fraca', textContent: '—' }), el('td', { className: 'fraca', textContent: '—' })];
-  const ev = 100 * r.ev / total, medio = r.tam / total, precisa = 100 * medio / (1 + medio);
-  const item = (sigla, n, cls) => el('div', { title: tituloIC(n, total) }, [el('small', { textContent: sigla }),
-    el('b', { className: cls, textContent: `${pct(n, total)}%` })]);
-  const fraca = total < AMOSTRA_MINIMA ? 'fraca' : '';
-  return [
-    el('td', { className: fraca }, [el('div', { className: 'resp' }, [
-      item('TODOS FOLDAM', r['todos foldam'], pct(r['todos foldam'], total) >= precisa ? 'bom' : 'ruim'),
-      item('PAGO', r.pago, ''), item('AUMENTADO', r.aumentado, '')])]),
-    el('td', { className: fraca, title: `precisa foldar ${Math.round(precisa)}% para empatar (bet média ${fmt(medio)} do pote) · ${total} bets` }, [
-      el('b', { className: ev > 2 ? 'bom' : ev < -2 ? 'ruim' : 'neutro', textContent: `${ev >= 0 ? '+' : ''}${fmt(ev, 1)}%` })]),
-  ];
-}
-
-// Lado de quem enfrenta bet: fold real contra o que precisaria foldar (bet ÷ (1 + bet), média das bets enfrentadas).
-function celDefesa(l) {
-  const [n, folds, precisa] = l.defesa ?? [0, 0, 0];
-  if (!n) return el('td', { className: 'fraca', textContent: '—' });
-  const fold = 100 * folds / n, p = 100 * precisa / n, d = fold - p;
-  const item = (sigla, txt, cls = '') => el('div', {}, [el('small', { textContent: sigla }), el('b', { className: cls, textContent: txt })]);
-  return el('td', { className: n < AMOSTRA_MINIMA ? 'fraca' : '',
-    title: `fold: ${tituloIC(folds, n)} · precisa ${Math.round(p)}% = média de bet ÷ (1 + bet) das bets que ele enfrentou` }, [
-    el('div', { className: 'resp' }, [item('FOLD', `${Math.round(fold)}%`, d > 0 ? 'bom' : 'ruim'), item('PRECISA', `${Math.round(p)}%`),
-      item(d >= 0 ? 'OVERFOLD' : 'DEFENDE MAIS', `${d >= 0 ? '+' : ''}${Math.round(d)}`, d > 0 ? 'bom' : 'ruim')])]);
-}
-
-function celWsd(l) {
-  const [g, n] = l.wsd;
-  return n ? el('td', { className: n < AMOSTRA_MINIMA ? 'fraca' : '', title: tituloIC(g, n), textContent: `${pct(g, n)}%` })
-    : el('td', { className: 'fraca', textContent: '—' });
-}
-
-function linhaGrade(l, nome, classe, filtroDoGrupo) {
-  return el('tr', { className: classe }, [
-    el('th', {}, [filtroDoGrupo ? el('button', { className: 'ver', type: 'button', textContent: nome,
-      title: 'Filtrar só este grupo', onclick: () => { Object.assign(filtros, filtroDoGrupo); delete filtros._agrupar; mudou(); } }) : nome]),
-    celAmostra(l), celAcoes(l), celDefesa(l), celBetMais(l), celWeak(l), ...celResposta(l), celWsd(l),
-  ]);
-}
-
-function cartaoRelatorio(r, a) {
-  const cab = [['Grupo'], ['Amostra'],
-    ['Ações', 'Barra: quanto cada ação aparece entre as decisões (check, bet, call, raise, fold).'],
-    ['Fold vs bet', 'Quando ele enfrenta bet/raise: quanto folda, quanto precisaria foldar para um blefe contra ele empatar (bet ÷ (1 + bet)) e a diferença. Verde = overfold: blefar contra ele dá lucro.'],
-    ['Bet mais usada', 'O tamanho de bet mais usado (em fração do pote) e quanto ele representa das bets.'],
-    ['Weak', 'Das mãos com cartas conhecidas, quantas eram weak (ar, A-high, draw que não chegou, par baixo): é o blefe.'],
-    ['Mesa respondeu à bet', 'Depois das bets deste grupo: todos foldaram, alguém pagou ou alguém aumentou. Verde = folda mais que o necessário para o blefe empatar.'],
-    ['EV blefe', 'Quanto um blefe puro com essas bets renderia, em % do pote: +1 pote quando todos foldam, −a bet quando não.'],
-    ['W$SD', 'Ganhou no showdown, entre os que chegaram lá (sem mãos com seguro/jackpot).']];
-  const corpo = el('tbody');
-  if (a) corpo.append(linhaGrade(a, 'A (fixado)', 'linha-a'));
-  if (r.geral) corpo.append(linhaGrade(r.geral, 'Geral', 'geral'));
-  const col = r.agrupar;
-  if (col) {
-    const grupos = DEF[col]?.[2] === 'faixas' ? opcoes.faixas.map(f => r.grupos.find(g => g.chave === f)).filter(Boolean)
-      : ordenar(r.grupos.map(g => (isNaN(g.chave) ? g.chave : Number(g.chave))), col).map(k => r.grupos.find(g => g.chave === String(k)));
-    for (const g of grupos) {
-      const valor = isNaN(g.chave) ? g.chave : Number(g.chave);
-      const filtroGrupo = col === 'n_jogadores' ? { n_jogadores: [valor] } : { [col]: [valor] };
-      corpo.append(linhaGrade(g, rotulo(col, valor), '', filtroGrupo));
-    }
-  }
-  const agrupar = el('select', { 'aria-label': 'Agrupar por', onchange: e => {
-    if (e.target.value) filtros._agrupar = e.target.value; else delete filtros._agrupar;
-    mudou();
-  } }, [el('option', { value: '', textContent: 'Só a linha geral' }),
-    ...AGRUPAVEIS.map(c => el('option', { value: c, textContent: `por ${DEF[c][1].toLowerCase()}`, selected: filtros._agrupar === c }))]);
-  return cartao('relatorio', 'Relatório', 'cada linha é um grupo de decisões; clique no nome do grupo para filtrar só ele', [
-    el('div', { className: 'rolar' }, [el('table', {}, [
-      el('thead', {}, [el('tr', {}, cab.map(([t, d]) => el('th', d ? { textContent: t, title: d } : { textContent: t })))]),
-      corpo])]),
-    el('div', { className: 'legenda', style: 'padding: 8px 16px 12px' }, ACOES.map(a => el('span', {}, [el('i', { style: `background:${COR[a]}` }), a.toLowerCase()]))),
-  ], el('label', { className: 'dividir' }, ['Dividir: ', agrupar]));
-}
-
-// ------------------------------------------------------------------------- resposta ao sizing
-
-// A tabela que mostra, para cada tamanho de bet, o que a mesa fez depois: o formato da grade com os números do H2N.
-function cartaoResposta(g) {
-  const totalBets = opcoes.faixas.reduce((s, f) => s + (g[f]?.usos ?? 0), 0);
-  const corpo = el('tbody');
-  const linhaResposta = (nome, d, classe = '') => {
-    const total = d['todos foldam'] + d.pago + d.aumentado;
-    const fraca = total < AMOSTRA_MINIMA ? 'fraca' : '';
-    const medio = total ? d.tam / total : 0, precisa = 100 * medio / (1 + medio), ev = total ? 100 * d.ev / total : 0;
-    const fold = pct(d['todos foldam'], total);
-    const barra = el('div', { className: 'pilha', style: 'width:150px' });
-    for (const [chave, cor] of [['todos foldam', 'var(--bom)'], ['pago', 'var(--c)'], ['aumentado', 'var(--r)']]) {
-      const p = total ? 100 * d[chave] / total : 0;
-      if (p > 0) barra.append(el('span', { style: `width:${p}%;background:${cor}`, title: `${chave}: ${tituloIC(d[chave], total)}` }));
-    }
-    const num = (n, cls = '') => el('td', { className: `num ${fraca}`, title: tituloIC(n, total) }, [
-      el('b', { className: cls, textContent: total ? `${pct(n, total)}%` : '—' })]);
-    return el('tr', { className: classe }, [
-      el('th', {}, [nome]),
-      el('td', { className: 'amostra' }, [el('b', { textContent: String(d.usos) }),
-        el('small', { textContent: `${pct(d.usos, totalBets)}% das bets` })]),
-      el('td', { className: fraca }, [barra]),
-      num(d['todos foldam'], fold >= precisa ? 'bom' : 'ruim'), num(d.pago), num(d.aumentado),
-      el('td', { className: `num ${fraca}`, title: `bet média ${fmt(medio)} do pote: ${fmt(medio)} ÷ (1 + ${fmt(medio)})` }, [
-        el('b', { textContent: total ? `${Math.round(precisa)}%` : '—' })]),
-      el('td', { className: `num ${fraca}`, title: total ? `${total} bets com resposta` : '' }, [
-        el('b', { className: ev > 2 ? 'bom' : ev < -2 ? 'ruim' : 'neutro', textContent: total ? `${ev >= 0 ? '+' : ''}${fmt(ev, 0)}` : '—' })]),
-    ]);
-  };
-  // "Total do filtro": todas as bets do filtro somadas. Com a faixa livre ligada, é a resposta para a faixa exata.
-  const soma = { usos: 0, 'todos foldam': 0, pago: 0, aumentado: 0, ev: 0, tam: 0 };
-  for (const d of Object.values(g)) for (const k of Object.keys(soma)) soma[k] += d[k] ?? 0;
-  if (soma.usos) {
-    const livre = filtros.tamanho && !Array.isArray(filtros.tamanho) ? descreverValor('tamanho', filtros.tamanho) : 'todas as bets';
-    corpo.append(linhaResposta(el('span', { className: 'tam' }, [el('b', { textContent: 'Total' }), el('small', { textContent: livre })]), soma, 'geral'));
-  }
-  for (const f of opcoes.faixas) {
-    if (g[f]) corpo.append(linhaResposta(el('span', { className: 'tam' }, [el('b', { textContent: cod(f) }), el('small', { textContent: f })]), g[f]));
-  }
-  const cab = [['Tamanho', 'Fração do pote da bet (B50 = 0,46–0,66).'], ['Bets', 'Quantas bets desse tamanho e quanto elas são do total.'],
-    ['Mesa respondeu', 'Barra: verde = todos foldaram, azul = alguém pagou, vermelho = alguém aumentou.'],
-    ['Todos foldam', 'Verde quando passa do "precisa foldar": aí o blefe com esse tamanho dá lucro.'], ['Pago'], ['Aumentado'],
-    ['Precisa foldar', 'Fold necessário para um blefe empatar: bet ÷ (1 + bet).'], ['EV blefe', 'Em % do pote: +1 pote se todos foldam, −a bet se não.']];
-  return cartao('resposta', 'Resposta ao sizing', 'o que a mesa fez depois de cada tamanho de bet', [
-    corpo.children.length ? el('div', { className: 'rolar' }, [el('table', {}, [
-      el('thead', {}, [el('tr', {}, cab.map(([tt, d]) => el('th', d ? { textContent: tt, title: d } : { textContent: tt })))]), corpo])])
-      : el('p', { className: 'nota', textContent: 'Sem bets com estes filtros.' }),
-    explicacaoEV()]);
-}
-
-// ------------------------------------------------------------------------- gráfico: tamanho × fold
-
-// pontos: faixa -> { usos, n, real, precisa } (em %). real = "todos foldam" (quem aposta) ou "fold" (quem enfrenta).
-function pontosAtaque(g) {
-  const out = {};
-  for (const [f, d] of Object.entries(g)) {
-    const total = d['todos foldam'] + d.pago + d.aumentado, medio = total ? d.tam / total : 0;
-    out[f] = { usos: d.usos, n: total, real: total ? 100 * d['todos foldam'] / total : null, precisa: 100 * medio / (1 + medio),
-      vreal: d['todos foldam'] };
-  }
-  return out;
-}
-function pontosDefesa(d) {
-  const out = {};
-  for (const [f, v] of Object.entries(d)) {
-    out[f] = { usos: v.n, n: v.n, real: v.n ? 100 * v.Fold / v.n : null, precisa: v.n ? 100 * v.precisa / v.n : 0, vreal: v.Fold };
-  }
-  return out;
-}
-
-function cartaoGrafico(pontos, lado) {
-  const ataque = lado === 'ataque';
-  const nomeReal = ataque ? 'todos foldam' : 'fold de quem enfrenta';
-  const faixas = opcoes.faixas;
-  const W = 560, H = 300, E = 40, D = 10, T = 14, B = 36;
-  const x = i => E + (i + 0.5) * (W - E - D) / faixas.length;
-  const y = v => T + (100 - v) * (H - T - B) / 100;
-  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `Fold por tamanho de bet (${nomeReal})` });
-  for (const v of [0, 25, 50, 75, 100]) {
-    s.append(svg('line', { x1: E, x2: W - D, y1: y(v), y2: y(v), class: v ? 'grade' : 'eixo' }),
-      svg('text', { x: E - 6, y: y(v) + 4, 'text-anchor': 'end' }, [`${v}%`]));
-  }
-  const maxUso = Math.max(1, ...faixas.map(f => pontos[f]?.usos ?? 0));
-  const pontosReal = [], pontosPrecisa = [];
-  faixas.forEach((f, i) => {
-    const d = pontos[f];
-    s.append(svg('text', { x: x(i), y: H - B + 16, 'text-anchor': 'middle' }, [cod(f)]));
-    if (!d) return;
-    const larg = (W - E - D) / faixas.length * 0.5;
-    const alt = (d.usos / maxUso) * (H - T - B) * 0.35;
-    s.append(svg('rect', { x: x(i) - larg / 2, y: H - B - alt, width: larg, height: alt, fill: '#2a2f38', rx: 2 },
-      [svg('title', {}, [`${cod(f)} (${f}): ${d.usos} ${ataque ? 'bets' : 'decisões contra esse tamanho'}`])]));
-    if (d.real === null) return;
-    pontosReal.push([x(i), y(d.real), d.n, `${cod(f)}: ${nomeReal} ${Math.round(d.real)}% (${tituloIC(d.vreal, d.n)})`]);
-    pontosPrecisa.push([x(i), y(d.precisa), d.n, `${cod(f)}: precisa foldar ${Math.round(d.precisa)}% para um blefe empatar`]);
-  });
-  const linha = (pts, cor, tracejado) => {
-    if (pts.length > 1) s.append(svg('polyline', { points: pts.map(([a, b]) => `${a},${b}`).join(' '), fill: 'none',
-      stroke: cor, 'stroke-width': 2, ...(tracejado ? { 'stroke-dasharray': '5 4' } : {}) }));
-    for (const [a, b, n, tit] of pts) {
-      s.append(svg('circle', { cx: a, cy: b, r: 4.5, fill: n < AMOSTRA_MINIMA ? '#111317' : cor, stroke: cor, 'stroke-width': 2 },
-        [svg('title', {}, [tit + (n < AMOSTRA_MINIMA ? ' · amostra pequena' : '')])]));
-    }
-  };
-  linha(pontosPrecisa, 'var(--c)', true);
-  linha(pontosReal, 'var(--accent)', false);
-  return cartao('grafico', 'Tamanho da bet × fold', ataque ? 'lima acima da azul = o blefe dá lucro'
-    : 'lado de quem enfrenta: lima acima da azul = ele folda demais (overfold)', [
-    el('div', { className: 'grafico' }, [s]),
-    el('div', { className: 'leg-graf' }, [
-      el('span', {}, [el('i', { style: 'background:var(--accent)' }), ataque ? 'todos foldam (real)' : 'fold dele (real)']),
-      el('span', {}, [el('i', { style: 'background:var(--c)' }), 'precisa foldar para um blefe empatar = bet ÷ (1 + bet)']),
-      el('span', {}, [el('i', { style: 'background:#2a2f38;height:9px' }), ataque ? 'barras: quanto cada tamanho é usado' : 'barras: quantas vezes ele enfrentou cada tamanho']),
-      el('span', { textContent: 'ponto vazio = menos de 30' })]),
-  ]);
-}
-
-// Lado de quem ENFRENTA a bet: para cada tamanho enfrentado, o que ele fez e se folda mais do que deveria.
-function cartaoDefesa(d) {
-  const corpo = el('tbody');
-  const linhaDefesa = (nome, v, classe = '') => {
-    const fraca = v.n < AMOSTRA_MINIMA ? 'fraca' : '';
-    const fold = 100 * v.Fold / v.n, precisa = 100 * v.precisa / v.n, dif = fold - precisa;
-    const barra = el('div', { className: 'pilha', style: 'width:150px' });
-    for (const [a, cor] of [['Fold', 'var(--f)'], ['Call', 'var(--c)'], ['Raise', 'var(--r)']]) {
-      const pc = 100 * v[a] / v.n;
-      if (pc > 0) barra.append(el('span', { style: `width:${pc}%;background:${cor}`, title: `${a}: ${tituloIC(v[a], v.n)}` }));
-    }
-    const num = (n, cls = '') => el('td', { className: `num ${fraca}`, title: tituloIC(n, v.n) }, [el('b', { className: cls, textContent: `${pct(n, v.n)}%` })]);
-    return el('tr', { className: classe }, [
-      el('th', {}, [nome]), el('td', { className: 'amostra' }, [el('b', { textContent: String(v.n) }), el('small', { textContent: 'decisões' })]),
-      el('td', { className: fraca }, [barra]), num(v.Fold, dif > 0 ? 'bom' : 'ruim'), num(v.Call), num(v.Raise),
-      el('td', { className: `num ${fraca}`, title: 'média de bet ÷ (1 + bet) das bets que ele enfrentou' }, [el('b', { textContent: `${Math.round(precisa)}%` })]),
-      el('td', { className: `num ${fraca}` }, [el('b', { className: dif > 0 ? 'bom' : 'ruim', textContent: `${dif >= 0 ? '+' : ''}${Math.round(dif)}` })]),
-    ]);
-  };
-  const soma = { n: 0, Fold: 0, Call: 0, Raise: 0, precisa: 0 };
-  for (const v of Object.values(d)) for (const k of Object.keys(soma)) soma[k] += v[k] ?? 0;
-  if (soma.n) corpo.append(linhaDefesa(el('span', { className: 'tam' }, [el('b', { textContent: 'Total' }), el('small', { textContent: 'todas as bets enfrentadas' })]), soma, 'geral'));
-  for (const f of opcoes.faixas) {
-    if (d[f]?.n) corpo.append(linhaDefesa(el('span', { className: 'tam' }, [el('b', { textContent: cod(f) }), el('small', { textContent: f })]), d[f]));
-  }
-  const cab = [['Bet enfrentada', 'Tamanho da bet/raise que ele enfrentou, em fração do pote.'], ['Decisões'],
-    ['O que ele fez', 'Barra: violeta = fold, azul = call, vermelho = raise.'], ['Fold', 'Verde = folda mais do que precisaria (overfold).'],
-    ['Call'], ['Raise'], ['Precisa foldar', 'Fold em que um blefe contra ele empata: bet ÷ (1 + bet).'],
-    ['Overfold', 'Fold real menos o necessário, em pontos. Positivo = ele folda demais: blefar contra ele dá lucro.']];
-  return cartao('defesa', 'Fold por sizing', 'o que ele faz contra cada tamanho de bet (lado de quem enfrenta)', [
-    el('div', { className: 'rolar' }, [el('table', {}, [
-      el('thead', {}, [el('tr', {}, cab.map(([tt, dd]) => el('th', dd ? { textContent: tt, title: dd } : { textContent: tt })))]), corpo])]),
-    el('p', { className: 'nota', textContent: 'Em multiway, o fold aqui é de cada jogador. O "todos foldam" da Resposta ao sizing é do lado de quem aposta e exige que ninguém pague.' }),
-  ]);
-}
-
-function explicacaoEV() {
-  return el('details', { className: 'explica' }, [el('summary', { textContent: 'Como ler o EV blefe e o gráfico' }),
-    el('p', { textContent: 'Para cada bet, olhamos o que a mesa fez depois. Se todos foldaram, um blefe teria levado o pote (+1 pote); '
-      + 'se alguém pagou ou aumentou, um blefe puro perde o que apostou (−tamanho). A média disso é o EV blefe, em % do pote: '
-      + 'EV = F × 100 − (1 − F) × tamanho × 100, com F = % de vezes em que todos foldaram.' }),
-    el('p', { textContent: '"Precisa foldar" é o empate: tamanho ÷ (1 + tamanho). Uma bet B50 de 0,52 do pote empata com 0,52 ÷ 1,52 = 34% de fold. '
-      + 'Se a mesa folda mais do que isso (linha lima acima da azul), o blefe com esse tamanho dá lucro.' }),
-    el('p', { textContent: 'Cuidados: supõe que o blefe nunca ganha quando é pago e não olha as ruas seguintes. Em bomb pot multiway, '
-      + 'F exige que TODOS foldem. As bets medidas são as do field, a maioria de valor; a mesa reage do mesmo jeito porque não vê as cartas.' }),
-  ]);
-}
-
-// ------------------------------------------------------------------------- força, draws, mãos
-
-function cartaoDistribuicao(id, titulo, sub, dados, chaves, nota) {
-  const total = Object.values(dados).reduce((a, b) => a + b, 0);
-  const max = Math.max(1, ...Object.values(dados));
-  const linhas = chaves.filter(k => dados[k]).map(k => el('tr', {}, [
-    el('th', { textContent: k }),
-    el('td', { className: 'num', title: tituloIC(dados[k], total), textContent: `${pct(dados[k], total)}%` }),
-    el('td', { className: 'num', style: 'color:var(--muted)', textContent: String(dados[k]) }),
-    el('td', { style: 'width:45%' }, [el('div', { className: 'barra', style: `width:${100 * dados[k] / max}%` })])]));
-  return cartao(id, titulo, sub, [
-    linhas.length ? el('table', { className: 'dist' }, [el('tbody', {}, linhas)]) : el('p', { className: 'nota', textContent: 'Nada com estes filtros.' }),
-    nota ? el('p', { className: 'nota', textContent: nota }) : null]);
-}
-
-// ------------------------------------------------------------------------- mesa (seletor de posição)
-
-const HORARIO = ['BTN', 'SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO'];
-const SAI = { 8: [], 7: ['UTG+1'], 6: ['UTG+1', 'MP'], 5: ['UTG+1', 'MP', 'HJ'], 4: ['UTG+1', 'MP', 'HJ', 'CO'],
-  3: ['UTG', 'UTG+1', 'MP', 'HJ', 'CO'], 2: ['SB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO'] };
 const AGE = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN'];
 const LUGARES = [[50, 94], [14, 80], [4, 46], [17, 11], [50, 4], [83, 11], [96, 46], [86, 80]];
 const LETRA_ACAO = { Check: 'X', Bet: 'B', Call: 'C', Raise: 'R', Fold: 'F' };
-let botao = Number(lerLocal('bp.botao') ?? 0);
+let linhaSel = {};  // { inicio, recorte: { n_jogadores, data }, ruas: { flop: { acao, pos, mesmo, tam, aumento, raise_x, fim } } }
+let linhaDados = null;
+const AJUDA = {
+  inicio: 'A 1ª street em que alguém apostou. Flop = a action começou no flop. Turn = todos deram check no flop e a action '
+    + 'começou no turn. River = check no flop e no turn. Sem action = check até o showdown, ninguém apostou. As streets antes da '
+    + 'escolhida ficam fora do filtro (foram todas em check).',
+  acao: 'Nesta street alguém apostou, ou todos deram check?',
+  pos: 'Posição de quem fez a 1ª bet nesta street (opcional: sem marcar nenhuma, vale qualquer posição; dá para marcar várias).',
+  mesmo: 'A 1ª bet desta street foi de quem fez a última bet/raise da street anterior (c-bet, barrel) ou de outro jogador?',
+  tam: 'Tamanho da 1ª bet, em fração do pote, nas mesmas faixas da MDA (as do H2N): B50 = 0,41–0,60 do pote. Marque um ou mais, ou use a faixa livre.',
+  aumento: 'Depois da 1ª bet, alguém deu raise nesta street? Não = só houve call ou fold.',
+  raise_x: 'Tamanho do 1º raise em vezes a 1ª bet: bet de 10 e raise para 30 = 3x.',
+  reraise: 'Depois do raise, alguém aumentou de novo (re-raise / 3-bet)? Vale quem fez a 1ª bet, quem pagou no meio ou outro jogador.',
+  reraise_x: 'Tamanho do re-raise em vezes o raise: raise para 30 e re-raise para 90 = 3x.',
+  fim: 'Opcional. Todos foldaram = quem apostou por último levou o pote e a mão acabou. 1 call / 2+ calls = quantos pagaram a '
+    + 'última bet/raise da street (a mão seguiu, ou foi ao showdown).',
+};
+const passoDe = rua => ((linhaSel.ruas ??= {})[rua] ??= {});
 
-function cartaoMesa(m) {
-  const jog = Array.isArray(filtros.n_jogadores) ? filtros.n_jogadores : null;
-  const k = jog ? Math.max(...jog) : 8;
-  const posicoes = HORARIO.filter(p => !SAI[k].includes(p));
-  const naMesa = AGE.filter(p => posicoes.includes(p));
-  const marcadas = new Set(filtros.pos ?? []);
-  const total = jog ? jog.reduce((s, n) => s + (m.por_n[n] ?? 0), 0) : Object.values(m.por_n).reduce((a, b) => a + b, 0);
-  const mover = d => { botao = (botao + d + 8) % 8; gravarLocal('bp.botao', botao); consultar(); };
-  const quadro = el('div', { className: 'mesa' }, [el('div', { className: 'feltro' }, [
-    el('strong', { textContent: jog ? `${jog.join(', ')} jogadores` : 'Todas as mesas' }),
-    el('span', { className: 'num', textContent: `${total.toLocaleString('pt-BR')} mãos` }),
-    el('small', { textContent: marcadas.size ? `filtrando: ${[...marcadas].join(', ')}` : 'clique num assento para filtrar a posição' })])]);
-  for (let i = posicoes.length; i < 8; i++) {
-    const [x, y] = LUGARES[(botao + i) % 8];
-    quadro.append(el('div', { className: 'assento vazio', style: `left:${x}%;top:${y}%`, textContent: 'vazio' }));
+function mudarLinha(f) { f(); limparLinha(); mudou(); }
+// Tira o que deixou de fazer sentido: streets antes do início, perguntas de bet numa street em check, o tamanho do
+// raise quando "não aumentaram".
+function limparLinha() {
+  const ruas = linhaSel.ruas ?? {}, i0 = RUAS_MDA.indexOf(linhaSel.inicio);
+  for (const [rua, p] of Object.entries(ruas)) {
+    const i = RUAS_MDA.indexOf(rua);
+    if (linhaSel.inicio === 'nenhuma' || (i0 >= 0 && i < i0)) { delete ruas[rua]; continue; }
+    if (i === i0) delete p.acao;  // a 1ª street com action já teve action
+    if (p.acao === 'check') for (const k of Object.keys(p)) if (k !== 'acao') delete p[k];
+    // sem "levou raise" marcado, as perguntas do raise somem: nada pode ficar filtrando escondido
+    if (p.aumento?.[0] !== 1) { delete p.raise_x; delete p.reraise; delete p.reraise_x; }
+    if (p.reraise?.[0] !== 1) delete p.reraise_x;
+    if (Array.isArray(p.tam)) p.tam = p.tam.filter(f => opcoes.faixas_h2n.includes(f));
+    for (const k of Object.keys(p)) if (p[k] === undefined || (Array.isArray(p[k]) && !p[k].length)) delete p[k];
+    if (!Object.keys(p).length) delete ruas[rua];
   }
-  posicoes.forEach((pos, i) => {
-    const [x, y] = LUGARES[(botao + i) % 8];
-    const acoes = m.por_pos[pos] ?? {};
-    const n = Object.values(acoes).reduce((a, b) => a + b, 0);
-    const resumo = Object.entries(acoes).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(([, c]) => pct(c, n) >= 1)
-      .map(([a, c]) => `${LETRA_ACAO[a] ?? a} ${pct(c, n)}%`).join(' · ');
-    quadro.append(el('button', {
-      type: 'button', className: 'assento' + (marcadas.has(pos) ? ' marcado' : ''), style: `left:${x}%;top:${y}%`,
-      ariaPressed: String(marcadas.has(pos)), title: `${pos}: clique para ${marcadas.has(pos) ? 'tirar do' : 'pôr no'} filtro`,
-      onclick: () => {
-        marcadas.has(pos) ? marcadas.delete(pos) : marcadas.add(pos);
-        if (marcadas.size) filtros.pos = [...marcadas]; else delete filtros.pos;
-        mudou();
-      },
-    }, [el('b', { textContent: pos }), el('span', { className: 'p', textContent: `age em ${naMesa.indexOf(pos) + 1}º · ${n ? `${n.toLocaleString('pt-BR')} ${n === 1 ? 'decisão' : 'decisões'}` : 'sem decisões'}` }),
-      el('span', { className: 'a', textContent: resumo })]));
-    if (i === 0) quadro.append(el('span', { className: 'dealer', textContent: 'D', style: `left:${x + (50 - x) * 0.3}%;top:${y + (50 - y) * 0.3}%` }));
-  });
-  return cartao('mesa', 'Mesa', 'as posições em volta do botão; clique nos assentos para filtrar', [
-    el('div', { className: 'mesa-controles' }, [
-      el('span', { className: 'nota', style: 'padding:0', textContent: 'Em cada assento: a ordem em que age no flop, quantas decisões há e o que mais faz (X check, B bet, C call, R raise, F fold).' }),
-      el('div', { className: 'seg' }, [
-        el('button', { type: 'button', textContent: '◀', title: 'Mover o botão no sentido anti-horário', onclick: () => mover(-1) }),
-        el('button', { type: 'button', textContent: 'botão', disabled: true }),
-        el('button', { type: 'button', textContent: '▶', title: 'Mover o botão no sentido horário', onclick: () => mover(1) })])]),
-    quadro]);
+  if (linhaSel.ruas && !Object.keys(linhaSel.ruas).length) delete linhaSel.ruas;
+  if (linhaSel.inicio === undefined) delete linhaSel.inicio;
+}
+const alternar = (rua, q, v, unico) => mudarLinha(() => {
+  const p = passoDe(rua), atual = Array.isArray(p[q]) ? p[q] : [];
+  p[q] = unico ? (atual.length === 1 && atual[0] === v ? [] : [v]) : atual.includes(v) ? atual.filter(x => x !== v) : [...atual, v];
+});
+
+// Um botão de resposta com quantas mãos têm essa resposta (cinza e desligado quando nenhuma).
+function opcao(txt, n, ativo, onclick, total) {
+  return el('button', { type: 'button', ariaPressed: String(ativo), disabled: !n && !ativo, onclick,
+    title: total ? `${n.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} mãos (${pct(n, total)}%)` : '' },
+  [...[].concat(txt), el('small', { textContent: ` ${n.toLocaleString('pt-BR')}` })]);  // txt: texto ou [texto, elementos]
+}
+function pergunta(num, titulo, ajuda, botoes, extra = null) {
+  return el('div', { className: 'pergunta' }, [
+    el('div', { className: 'pergunta-tit' }, [num ? el('b', { textContent: num }) : null, titulo,
+      el('span', { className: 'ajuda', tabIndex: 0, role: 'note', title: ajuda, ariaLabel: ajuda, textContent: '?' })]),
+    el('div', { className: 'seg' }, botoes), extra]);
+}
+const faixaTxt = (v, unidade) => `${fmt(v.min || 0)} a ${v.max === '' || v.max == null ? 'sem teto' : fmt(v.max)} ${unidade}`;
+
+// A barrinha: uma faixa livre "de X até Y" no lugar dos botões. Até o teto = sem teto.
+function faixaLivre(v, teto, unidade, aplicar) {
+  const ativa = v && !Array.isArray(v), passo = teto > 5 ? 0.1 : 0.01;
+  let de = ativa ? Number(v.min || 0) : 0;
+  let ate = ativa && v.max !== '' && v.max != null ? Number(v.max) : teto;
+  const rot = el('b');
+  const mostrar = () => { rot.textContent = `${fmt(de)} até ${ate >= teto ? `${fmt(teto)}+ (sem teto)` : fmt(ate)} ${unidade}`; };
+  const enviar = () => aplicar({ min: de, max: ate >= teto ? '' : ate });
+  const barra = (valor, lado) => el('input', { type: 'range', min: 0, max: teto, step: passo, value: valor, 'aria-label': `faixa livre: ${lado}`,
+    oninput: e => {
+      const x = Number(e.target.value);
+      if (lado === 'de') de = Math.min(x, ate); else ate = Math.max(x, de);
+      e.target.value = lado === 'de' ? de : ate;
+      caixaDe.value = de; caixaAte.value = ate >= teto ? '' : ate;
+      mostrar();
+    }, onchange: enviar });
+  const numero = (valor, lado) => el('input', { type: 'number', min: 0, max: teto, step: passo, value: valor,
+    placeholder: lado === 'até' ? 'sem teto' : '0', 'aria-label': `faixa livre: ${lado} (número)`,
+    onchange: e => {
+      const x = e.target.value === '' ? (lado === 'de' ? 0 : teto) : Math.max(0, Number(e.target.value));
+      if (lado === 'de') de = Math.min(x, ate); else ate = Math.max(x, de);
+      enviar();
+    } });
+  const caixaDe = numero(de, 'de'), caixaAte = numero(ate >= teto ? '' : ate, 'até');
+  mostrar();
+  return el('div', { className: 'faixa-livre' + (ativa ? ' ativa' : '') }, [
+    el('div', { className: 'faixa-livre-topo' }, [el('span', { textContent: ativa ? 'Faixa livre (ligada): ' : 'Ou uma faixa livre: ' }), rot,
+      ativa ? el('button', { className: 'chip', type: 'button', textContent: 'tirar', onclick: () => aplicar(undefined) }) : null]),
+    el('div', { className: 'faixa-livre-barras' }, [el('span', { textContent: 'de' }), barra(de, 'de'), caixaDe]),
+    el('div', { className: 'faixa-livre-barras' }, [el('span', { textContent: 'até' }), barra(ate, 'até'), caixaAte]),
+  ]);
+}
+
+function cartaoInicio() {
+  const c = linhaDados.inicio, total = Object.values(c).reduce((a, b) => a + b, 0), rec = linhaSel.recorte ?? {};
+  const mesa = [8, 7, 6, 5, 4, 3, 2].map(k => el('button', { type: 'button', textContent: String(k), ariaPressed: String(!!rec.n_jogadores?.includes(k)),
+    title: `mesas com ${k} jogadores`, onclick: () => mudarLinha(() => {
+      const r = (linhaSel.recorte ??= {}), s = new Set(r.n_jogadores ?? []);
+      s.has(k) ? s.delete(k) : s.add(k);
+      if (s.size) r.n_jogadores = [...s].sort((a, b) => b - a); else delete r.n_jogadores;
+      if (!Object.keys(r).length) delete linhaSel.recorte;
+    }) }));
+  const data = (lado, rot) => el('input', { type: 'date', value: rec.data?.[lado] ?? '', 'aria-label': rot,
+    min: opcoes.datas?.[0] ?? '', max: opcoes.datas?.[1] ?? '', onchange: e => mudarLinha(() => {
+      const r = (linhaSel.recorte ??= {});
+      r.data = { ...(r.data ?? {}), [lado]: e.target.value };
+      if (!r.data.min && !r.data.max) delete r.data;
+      if (!Object.keys(r).length) delete linhaSel.recorte;
+    }) });
+  return el('section', { className: 'card perguntas' }, [
+    pergunta('1', 'Primeira street com action', AJUDA.inicio,
+      [['flop', 'Flop'], ['turn', 'Turn'], ['river', 'River'], ['nenhuma', 'Sem action']].map(([v, t]) => opcao(t, c[v] ?? 0, linhaSel.inicio === v,
+        () => mudarLinha(() => { linhaSel.inicio = linhaSel.inicio === v ? undefined : v; }), total))),
+    el('div', { className: 'recorte' }, [
+      el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Jogadores na mesa (opcional)' }), el('div', { className: 'seg' }, mesa)]),
+      el('div', { className: 'grupo-cmd cmd-datas' }, [el('span', { textContent: 'Período (opcional)' }),
+        el('div', { className: 'faixa' }, [data('min', 'Data inicial'), data('max', 'Data final')])]),
+      el('button', { className: 'btn', type: 'button', textContent: 'Limpar tudo', onclick: () => { linhaSel = {}; mudou(); } })])]);
+}
+
+function cartaoRua(rua) {
+  const d = linhaDados.ruas[rua], c = d.contagens, p = linhaSel.ruas?.[rua] ?? {};
+  const chegaram = (c.acao.sim ?? 0) + (c.acao.check ?? 0), inicio = linhaSel.inicio === rua;
+  const lista = (q, valores, unico, rot = v => v) => {
+    const total = Object.values(c[q]).reduce((a, b) => a + b, 0);
+    return valores.map(v => opcao(rot(v), c[q][String(v)] ?? 0, Array.isArray(p[q]) && p[q].includes(v), () => alternar(rua, q, v, unico), total));
+  };
+  const blocos = [];
+  if (!inicio) {
+    blocos.push(pergunta('', 'Teve action nesta street?', AJUDA.acao, [['sim', 'Sim, alguém apostou'], ['check', 'Não, todos deram check']].map(([v, t]) =>
+      opcao(t, c.acao[v] ?? 0, p.acao === v, () => mudarLinha(() => { passoDe(rua).acao = p.acao === v ? undefined : v; }), chegaram))));
+  }
+  if (p.acao !== 'check') {
+    const marcado = (q, v) => Array.isArray(p[q]) && p[q].includes(v);
+    blocos.push(pergunta('2', 'Quem fez a 1ª bet?', AJUDA.pos, lista('pos', AGE.filter(x => c.pos[x] || marcado('pos', x)), false)));
+    if (rua !== 'flop' && Object.keys(c.mesmo).length) {
+      blocos.push(pergunta('', 'A 1ª bet foi do agressor da street anterior?', AJUDA.mesmo,
+        lista('mesmo', [1, 0], true, v => (v ? 'Sim, o mesmo jogador' : 'Não, outro jogador'))));
+    }
+    blocos.push(pergunta('3', 'Tamanho da 1ª bet', AJUDA.tam, lista('tam', opcoes.faixas_h2n.filter(f => c.tam[f] || marcado('tam', f)), false,
+      f => [`${cod(f)} `, el('span', { className: 'intervalo', textContent: f })]),
+      faixaLivre(p.tam, 3, '× pote', v => mudarLinha(() => { passoDe(rua).tam = v; }))));
+    blocos.push(quadroResposta(d));  // o overfold contra a 1ª bet, logo abaixo do tamanho dela
+    blocos.push(pergunta('4', 'Alguém aumentou depois da 1ª bet?', AJUDA.aumento,
+      lista('aumento', [1, 0], true, v => (v ? 'Sim, levou raise' : 'Não, só call ou fold'))));
+    if (p.aumento?.[0] === 1) {
+      blocos.push(pergunta('', 'Tamanho do raise (vezes a 1ª bet)', AJUDA.raise_x,
+        lista('raise_x', linhaDados.faixas_x.filter(f => c.raise_x[f] || marcado('raise_x', f)), false),
+        faixaLivre(p.raise_x, 20, '× a 1ª bet', v => mudarLinha(() => { passoDe(rua).raise_x = v; }))));
+      // o overfold contra o raise: todos os tamanhos de raise, ou só os escolhidos
+      blocos.push(tabelaResposta(d.resposta_raise, RESPOSTA_RAISE));
+      // a continuação: alguém aumentou depois do raise?
+      blocos.push(pergunta('', 'Alguém aumentou depois do raise? (re-raise)', AJUDA.reraise,
+        lista('reraise', [1, 0], true, v => (v ? 'Sim, levou re-raise' : 'Não, só call ou fold'))));
+      if (p.reraise?.[0] === 1) {
+        blocos.push(pergunta('', 'Tamanho do re-raise (vezes o raise)', AJUDA.reraise_x,
+          lista('reraise_x', linhaDados.faixas_x2.filter(f => c.reraise_x[f] || marcado('reraise_x', f)), false),
+          faixaLivre(p.reraise_x, 10, '× o raise', v => mudarLinha(() => { passoDe(rua).reraise_x = v; }))));
+        blocos.push(tabelaResposta(d.resposta_reraise, RESPOSTA_RERAISE));
+      }
+    }
+    blocos.push(pergunta('5', 'Como a street terminou?', AJUDA.fim,
+      lista('fim', ['levou', '1', '2+'], false, v => ({ levou: 'Todos foldaram (a mão acabou)', 1: '1 call', '2+': '2+ calls' })[v])));
+  }
+  return el('section', { className: 'card perguntas' }, [
+    el('h2', {}, [NOME_RUA[rua], el('small', { textContent: `${chegaram.toLocaleString('pt-BR')} mãos chegaram ao ${rua} com o resto da linha` })]),
+    ...blocos]);
+}
+
+// O que a mesa fez depois da 1ª bet (ou do 1º raise), com a linha até esta street valendo: todos foldaram, 1 call,
+// 2+ calls, mais uma agressão, o fold que um blefe precisa (risco ÷ (1 + risco)) e o EV do blefe em % do pote.
+// A 1ª bet pode ser vista por tamanho, por posição de quem apostou ou na grade posição × tamanho; toda tabela tem o Total.
+const RESPOSTA_BET = { titulo: 'O que a mesa fez depois da 1ª bet', faixas: () => opcoes.faixas_h2n, cab: 'Tamanho',
+  rot: f => [el('b', { textContent: cod(f) }), el('small', { textContent: f })], mais: 'Raise',
+  nota: 'Por tamanho mostra todos os tamanhos (a posição escolhida vale).' };
+const RESPOSTA_POS = { ...RESPOSTA_BET, faixas: () => AGE, cab: 'Quem apostou', rot: f => [el('b', { textContent: f })],
+  nota: 'Por posição mostra todas as posições de quem fez a 1ª bet (o tamanho escolhido vale).' };
+const RESPOSTA_RAISE = { titulo: 'O que a mesa fez depois do raise, por tamanho do raise (vezes a 1ª bet)', faixas: () => linhaDados.faixas_x,
+  cab: 'Tamanho', rot: f => [el('b', { textContent: f })], mais: 'Re-raise',
+  nota: 'Todos foldaram = todos, inclusive quem fez a 1ª bet, largaram para quem deu o raise. Precisa foldar e EV usam o que o '
+    + 'raise arrisca: tudo o que ele põe na hora (o call embutido + o aumento) ÷ o pote antes dele. Ex.: bet 10 num pote de 100, '
+    + 'raise para 30 = arrisca 30 para ganhar 110, precisa de 21% de fold.' };
+const RESPOSTA_RERAISE = { titulo: 'O que a mesa fez depois do re-raise, por tamanho do re-raise (vezes o raise)',
+  faixas: () => linhaDados.faixas_x2, cab: 'Tamanho', rot: f => [el('b', { textContent: f })], mais: '4-bet',
+  nota: 'Todos foldaram = todos largaram para quem deu o re-raise. Precisa foldar e EV usam o que o re-raise arrisca (tudo o '
+    + 'que ele põe na hora ÷ o pote antes dele).' };
+const CAMPOS_RESP = ['n', 'todos foldam', '1 call', '2+ calls', 'aumentado', 'ev', 'tam'];
+const somaResp = ds => Object.fromEntries(CAMPOS_RESP.map(k => [k, ds.reduce((a, d) => a + (d[k] ?? 0), 0)]));
+const contaResp = d => {  // fold, precisa e EV em %, e se a amostra é pequena
+  const medio = d.tam / d.n;
+  return { fold: pct(d['todos foldam'], d.n), precisa: 100 * medio / (1 + medio), ev: 100 * d.ev / d.n, fraca: d.n < AMOSTRA_MINIMA };
+};
+const corEv = ev => (ev > 2 ? 'bom' : ev < -2 ? 'ruim' : 'neutro');
+const txtEv = ev => `${ev >= 0 ? '+' : ''}${fmt(ev, 0)}%`;
+let vistaResposta = lerLocal('bp.vistaResposta') ?? 'tam';
+
+function linhaResposta(d, rotulo, classe = '') {
+  const { fold, precisa, ev, fraca } = contaResp(d), f = fraca ? ' fraca' : '';
+  const num = (n, cls = '') => el('td', { className: 'num' + f, title: tituloIC(n, d.n) }, [el('b', { className: cls, textContent: `${pct(n, d.n)}%` })]);
+  return el('tr', { className: classe }, [
+    el('th', {}, [el('span', { className: 'tam' }, rotulo)]),
+    el('td', { className: 'num' + f, textContent: String(d.n) }),
+    num(d['todos foldam'], fold >= precisa ? 'bom' : 'ruim'), num(d['1 call']), num(d['2+ calls']), num(d.aumentado),
+    el('td', { className: 'num' + f, textContent: `${Math.round(precisa)}%` }),
+    el('td', { className: 'num' + f }, [el('b', { className: corEv(ev), textContent: txtEv(ev) })])]);
+}
+
+function caixaResposta(titulo, controles, conteudo, nota) {
+  return el('details', { className: 'explica resposta-linha', open: true }, [
+    el('summary', { textContent: titulo }), controles, conteudo,
+    el('p', { className: 'nota', style: 'padding:4px 0 0', textContent: `${nota ? nota + ' ' : ''}Números em cinza: menos de 30 mãos.` })]);
+}
+
+function tabelaResposta(resp, tipo, controles = null) {
+  const chaves = tipo.faixas().filter(f => resp[f]);
+  if (!chaves.length) return null;
+  const linhas = [linhaResposta(somaResp(chaves.map(f => resp[f])), [el('b', { textContent: 'Total' })], 'geral'),
+    ...chaves.map(f => linhaResposta(resp[f], tipo.rot(f)))];
+  return caixaResposta(tipo.titulo, controles, el('div', { className: 'rolar' }, [el('table', {}, [
+    el('thead', {}, [el('tr', {}, [[tipo.cab], ['Mãos'], ['Todos foldaram', 'Verde quando passa do "precisa foldar": o blefe deu lucro.'],
+      ['1 call', 'Um jogador pagou e ninguém aumentou.'], ['2+ calls', 'Dois ou mais pagaram e ninguém aumentou.'], [tipo.mais],
+      ['Precisa foldar', 'Fold que um blefe precisa para empatar: risco ÷ (1 + risco).'],
+      ['EV blefe', 'Em % do pote: +1 pote se todos foldaram, −o que arriscou se não.']]
+      .map(([t, dd]) => el('th', dd ? { textContent: t, title: dd } : { textContent: t })))]),
+    el('tbody', {}, linhas)])]), tipo.nota);
+}
+
+// A grade posição × tamanho: em cada casa o fold de todos (verde quando passa do que o blefe precisa) e, embaixo, quantas
+// mãos e o EV. A última coluna e a última linha são os totais da posição e do tamanho.
+function gradeResposta(resp, controles) {
+  const casa = (pos, f) => resp[`${pos}|${f}`];
+  const pos = AGE.filter(p => opcoes.faixas_h2n.some(f => casa(p, f))), faixas = opcoes.faixas_h2n.filter(f => pos.some(p => casa(p, f)));
+  if (!pos.length) return null;
+  const cel = d => {
+    if (!d) return el('td', { className: 'num fraca', textContent: '—' });
+    const { fold, precisa, ev, fraca } = contaResp(d);
+    return el('td', { className: 'num casa' + (fraca ? ' fraca' : ''),
+      title: `${d.n} mãos · todos foldaram ${fold}% (precisa ${Math.round(precisa)}%) · EV do blefe ${txtEv(ev)}` }, [
+      el('b', { className: fold >= precisa ? 'bom' : 'ruim', textContent: `${fold}%` }),
+      el('small', { textContent: `${d.n} · ${txtEv(ev)}` })]);
+  };
+  const linha = (rot, ds, cls = '') => el('tr', { className: cls }, [el('th', {}, [rot]), ...ds.map(cel)]);
+  const total = ds => (ds.some(Boolean) ? somaResp(ds.filter(Boolean)) : null);
+  return caixaResposta('O que a mesa fez depois da 1ª bet', controles, el('div', { className: 'rolar' }, [el('table', { className: 'grade-resp' }, [
+    el('thead', {}, [el('tr', {}, [el('th', { textContent: 'Quem apostou ↓ · tamanho →' }),
+      ...faixas.map(f => el('th', {}, [cod(f), el('small', { className: 'intervalo-th', textContent: f })])), el('th', { textContent: 'Total' })])]),
+    el('tbody', {}, [
+      ...pos.map(p => linha(p, [...faixas.map(f => casa(p, f)), total(faixas.map(f => casa(p, f)))])),
+      linha('Total', [...faixas.map(f => total(pos.map(p => casa(p, f)))), total(pos.flatMap(p => faixas.map(f => casa(p, f))))], 'geral')])])]),
+    'Em cada casa: todos foldaram (verde quando passa do que o blefe precisa), mãos e EV do blefe. Passe a seta para ver o "precisa".');
+}
+
+function quadroResposta(d) {
+  const controles = el('div', { className: 'seg vistas-resp' }, [['tam', 'Por tamanho'], ['pos', 'Por posição'], ['pos_tam', 'Posição × tamanho']]
+    .map(([v, t]) => el('button', { type: 'button', textContent: t, ariaPressed: String(vistaResposta === v),
+      onclick: () => { vistaResposta = v; gravarLocal('bp.vistaResposta', v); desenharLinha(); } })));
+  if (vistaResposta === 'pos_tam') return gradeResposta(d.resposta_pos_tam, controles);
+  return vistaResposta === 'pos' ? tabelaResposta(d.resposta_pos, RESPOSTA_POS, controles) : tabelaResposta(d.resposta, RESPOSTA_BET, controles);
+}
+
+function fraseLinha() {
+  const L = linhaSel, partes = [];
+  if (L.inicio === 'nenhuma') partes.push('ninguém apostou, check até o showdown');
+  else if (L.inicio === 'flop') partes.push('a action começou no flop');
+  else if (L.inicio) partes.push(`todos deram check até o ${L.inicio}, onde a action começou`);
+  for (const rua of RUAS_MDA) {
+    const p = L.ruas?.[rua];
+    if (!p) continue;
+    if (p.acao === 'check') { partes.push(`no ${rua}, todos deram check`); continue; }
+    const t = [p.pos?.length ? `${ou(p.pos)} fez a 1ª bet` : 'alguém fez a 1ª bet'];
+    if (p.mesmo?.length) t.push(p.mesmo[0] ? '(o agressor da street anterior)' : '(outro que não o agressor anterior)');
+    if (Array.isArray(p.tam) && p.tam.length) t.push(`de ${ou(p.tam.map(f => `${cod(f)} (${f})`))}`); else if (p.tam) t.push(`de ${faixaTxt(p.tam, '× pote')}`);
+    if (p.aumento?.length) {
+      t.push(p.aumento[0] ? 'e levou raise' : 'sem raise');
+      if (p.raise_x) t.push(Array.isArray(p.raise_x) ? `de ${ou(p.raise_x)}` : `de ${faixaTxt(p.raise_x, '× a bet')}`);
+      if (p.reraise?.length) t.push(p.reraise[0] ? 'e re-raise' : 'sem re-raise');
+      if (p.reraise_x) t.push(Array.isArray(p.reraise_x) ? `de ${ou(p.reraise_x)}` : `de ${faixaTxt(p.reraise_x, '× o raise')}`);
+    }
+    if (p.fim?.length) t.push(`— ${ou(p.fim.map(v => ({ levou: 'todos foldaram', 1: '1 call', '2+': '2+ calls' })[v]))}`);
+    partes.push(`no ${rua}, ${t.join(' ')}`);
+  }
+  const rec = L.recorte ?? {};
+  if (rec.n_jogadores?.length) partes.push(`mesas de ${ou(rec.n_jogadores.map(String))} jogadores`);
+  if (rec.data?.min || rec.data?.max) partes.push(rec.data.min && rec.data.max ? `de ${rec.data.min} a ${rec.data.max}` : rec.data.min ? `a partir de ${rec.data.min}` : `até ${rec.data.max}`);
+  return partes.length ? `Mãos em que ${partes.join(' · ')}:` : 'Todas as mãos. Comece pela pergunta 1:';
+}
+
+function desenharLinha() {
+  const i0 = RUAS_MDA.indexOf(linhaSel.inicio);
+  const ruas = linhaSel.inicio === 'nenhuma' ? [] : RUAS_MDA.filter((r, i) => i >= Math.max(i0, 0)
+    && ((linhaDados.ruas[r].contagens.acao.sim ?? 0) + (linhaDados.ruas[r].contagens.acao.check ?? 0) > 0 || linhaSel.ruas?.[r]));
+  $('estudo').replaceChildren(
+    el('p', { className: 'frase-linha' }, [fraseLinha(), el('b', { textContent: ` ${linhaDados.total.toLocaleString('pt-BR')} mãos` })]),
+    cartaoInicio(),
+    ...ruas.map(cartaoRua),
+    el('section', { className: 'card' }, [el('h2', {}, ['Mãos desta linha',
+      el('small', { textContent: 'uma por mão, a partir da 1ª bet da última street escolhida; ▶ reproduz a mesa' })]),
+    el('div', { style: 'padding:12px 16px' }, [painelMaos({ linha: linhaSel }, `Ver mãos (${linhaDados.total.toLocaleString('pt-BR')})`)])]));
 }
 
 // ------------------------------------------------------------------------- MDA (árvore de ações, estilo H2N)
 // Colunas FLOP / TURN / RIVER com os nós da árvore; clicar numa ação abre os bet sizes; "afunilar" leva a linha
-// escolhida para a rua seguinte. Rua, situação, linha e tamanhos vêm da árvore; os outros filtros valem.
+// escolhida para a rua seguinte. Posição e mesa vêm da barra da própria MDA.
 
-const DA_ARVORE = new Set(['rua', 'situacao', 'ip', 'linha_flop', 'linha_turn', 'tam_flop', 'tam_turn', 'enf_flop', 'enf_turn',
-  'acao', 'tamanho', 'tamanho_enfrentado', 'decisao_n', 'checou_antes', 'resposta', '_agrupar']);
 const RUAS_MDA = ['flop', 'turn', 'river'];
 const NOME_RUA = { flop: 'Flop', turn: 'Turn', river: 'River' };
 const MINIMO_NO = 10;  // nós com menos decisões ficam recolhidos em "mais linhas"
@@ -607,7 +372,7 @@ const FAIXAS_MDA = () => [...opcoes.faixas_h2n].reverse();  // as faixas do H2N,
 let caminho = lerLocal('bp.caminho') ?? {};
 let mdaSel = null;  // { rua, chave, acao }
 let mdaDados = null;
-const ruasAbertas = new Set();  // os três boxes começam minimizados
+const ruasAbertas = new Set(['flop']);  // o flop começa aberto; turn e river, minimizados
 let separarAI = false;          // sempre começa desligado: a bet all-in entra na faixa do tamanho dela
 let buscaLinha = '';            // a linha digitada na busca: os boxes mostram só as que começam assim
 // "x - b", "XB" e "X B" são a mesma linha: só as letras contam ("(sem bet)" fica de fora)
@@ -653,11 +418,25 @@ function caixaBusca() {
 }
 
 // Na linha do turn ou do river: o tamanho da bet dele (ou da que ele pagou) na rua anterior vira filtro da linha.
-function escolherFaixaAnterior(rua, linha, faixa, lado) {
+// o tamanho de um passo do caminho: uma faixa ou várias (o conjunto delas); o caminho salvo antigo tinha uma só
+const faixasDe = passo => (Array.isArray(passo?.faixa) ? passo.faixa : passo?.faixa ? [passo.faixa] : []);
+// marca/desmarca um tamanho da rua anterior (null = todos os tamanhos)
+function alternarFaixaAnterior(rua, linha, faixa, lado) {
+  const atual = caminho[rua]?.linha === linha ? faixasDe(caminho[rua]) : [];
+  const nova = faixa === null ? [] : atual.includes(faixa) ? atual.filter(f => f !== faixa) : [...atual, faixa];
   const c = { ...caminho };
-  if (faixa) c[rua] = { linha, faixa, lado }; else delete c[rua];
+  if (nova.length) c[rua] = { linha, faixa: nova, lado }; else delete c[rua];
   caminho = c;
   salvarCaminho();
+  consultar();
+}
+// volta ao começo: sem caminho, sem busca, sem linha aberta, com o flop aberto
+function voltarAoFlop() {
+  caminho = {};
+  salvarCaminho();
+  buscaLinha = '';
+  mdaSel = null;
+  ruasAbertas.add('flop');
   consultar();
 }
 const letrasEmPalavras = s => (s ? linhaEmPalavras(s) : '');
@@ -674,7 +453,7 @@ const rotuloLinha = (no, acao) => [...no.prefixo, no.atual + LETRA_ACAO[acao]].j
 
 function salvarCaminho() { gravarLocal('bp.caminho', caminho); }
 function afunilar(rua, linha, faixa, lado) {
-  caminho = { ...caminho, [rua]: { linha, faixa, lado } };
+  caminho = { ...caminho, [rua]: { linha, faixa: faixa ? [faixa] : null, lado } };
   if (rua === 'flop') delete caminho.turn;  // mudar o flop invalida o que estava escolhido no turn
   salvarCaminho();
   mdaSel = null;
@@ -709,7 +488,7 @@ function barraMda() {
     } }));
   }
   const passos = Object.entries(caminho).filter(([, v]) => v?.linha).map(([rua, v]) => el('span', { className: 'pilula' }, [
-    `${NOME_RUA[rua]}: ${letrasEmPalavras(v.linha)}${v.faixa ? ` ${v.lado === 'pagou' ? 'pagando' : ''} ${cod(v.faixa)} (${v.faixa})` : ''}`,
+    `${NOME_RUA[rua]}: ${letrasEmPalavras(v.linha)}${faixasDe(v).length ? ` ${v.lado === 'pagou' ? 'pagando' : ''} ${faixasDe(v).map(f => `${cod(f)} (${f})`).join(' + ')}` : ''}`,
     el('button', { type: 'button', textContent: '×', title: 'Tirar este passo', onclick: () => tirarCaminho(rua) })]));
   return el('div', { className: 'mda-barra' }, [
     el('div', { className: 'grupo-cmd' }, [el('span', { textContent: 'Posição' }), segPos]),
@@ -718,18 +497,19 @@ function barraMda() {
     el('div', { className: 'grupo-cmd caminho' }, [el('span', { textContent: 'Caminho (afunilar)' }),
       el('div', { className: 'chips' }, passos.length ? passos : [el('span', { className: 'vazio', textContent: 'clique numa ação e em "afunilar" para seguir a linha na rua seguinte' })])]),
     el('div', { className: 'fim' }, [
+      Object.keys(caminho).length || normLinha(buscaLinha) || mdaSel ? el('button', { className: 'btn', type: 'button', textContent: '↺ voltar ao flop',
+        title: 'Tira o caminho afunilado, a busca e a linha aberta', onclick: voltarAoFlop }) : null,
       el('button', { className: 'btn' + (separarAI ? ' primario' : ''), type: 'button', ariaPressed: String(separarAI),
         textContent: `All-in separado: ${separarAI ? 'sim' : 'não'}`,
         title: separarAI ? 'Ligado: as bets all-in aparecem nas linhas -AI e saem da conta do tamanho delas. Clique para juntar.'
           : 'Desligado: cada bet all-in soma na faixa do tamanho dela (a amostra de all-in costuma ser pequena). Clique para mostrar à parte.',
-        onclick: () => { separarAI = !separarAI; desenharMda(); } }),
-      el('button', { className: 'btn', type: 'button', textContent: 'Mais filtros', onclick: abrirAvancado })]),
+        onclick: () => { separarAI = !separarAI; desenharMda(); } })]),
   ]);
 }
 
 // Cada rua é um box com uma lista de linhas, como no perfil do H2N: "X - B  25%  (276)" = depois do flop em check,
-// quantas vezes ele foi o primeiro a apostar no turn. Os boxes começam minimizados; clicar numa linha abre os bet
-// sizes dela no painel embaixo dos três boxes.
+// quantas vezes ele foi o primeiro a apostar no turn. Só o flop começa aberto; clicar numa linha abre os bet
+// sizes dela no painel preso no pé da tela.
 function colunaMda(rua, nos) {
   const todas = nos.flatMap(no => ACOES.filter(a => no.acoes[a]).map(a => ({ no, a })));
   const linhas = todas.filter(({ no, a }) => casaBusca(rotuloLinha(no, a)));
@@ -737,10 +517,11 @@ function colunaMda(rua, nos) {
   const linha = ({ no, a }) => {
     const n = no.acoes[a], ativa = mdaSel && mdaSel.rua === rua && mdaSel.chave === no.chave && mdaSel.acao === a;
     return el('button', { type: 'button', className: 'mda-linha' + (ativa ? ' aberta' : ''), ariaPressed: String(!!ativa),
-      title: `${descreverNo(no)} · ${a}: ${tituloIC(n, no.n)} · clique para ${ativa ? 'fechar' : 'ver os tamanhos embaixo'}`,
+      title: `${descreverNo(no)} · ${a}: ${tituloIC(n, no.n)} · clique para ${ativa ? 'fechar' : 'ver os tamanhos (abre no pé da tela)'}`,
       onclick: () => { if (ativa) { mdaSel = null; desenharMda(); } else escolherLinha({ rua, no, a }); } }, [
       el('span', { className: 'rot', textContent: rotuloLinha(no, a) }),
-      el('b', { className: no.n < AMOSTRA_MINIMA ? 'fraca' : '', textContent: `${pct(n, no.n)}%` }),
+      // situação com menos de 30 decisões: o % sai do negrito (100% de 1 mão não é destaque)
+      no.n < AMOSTRA_MINIMA ? el('span', { className: 'fraca', textContent: `${pct(n, no.n)}%` }) : el('b', { textContent: `${pct(n, no.n)}%` }),
       el('small', { textContent: `(${n})` })]);
   };
   const grandes = linhas.filter(l => l.no.n >= MINIMO_NO), pequenas = linhas.filter(l => l.no.n < MINIMO_NO);
@@ -783,8 +564,8 @@ function detalheMda() {
   const corpo = el('tbody');
   let cab, nota;
   if (acao === 'Bet' || acao === 'Raise') {
-    for (const [k, d] of tamanhosDaLinha(no.tamanhos[acao] ?? {})) {
-      const [faixa, ai] = k.split('|');
+    const linhaBet = (k, d) => {  // k = "faixa" ou "faixa|AI"; null = o Total (todas as faixas)
+      const [faixa, ai] = (k ?? '').split('|');
       const cel = n => el('td', { className: 'num' + (d.n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(n, d.n) }, [
         el('b', { textContent: `${pct(n, d.n)}%` }), el('small', { textContent: ` ${n}` })]);
       const dep = d.depois, totalDep = dep.Fold + dep.Call + dep.Raise;
@@ -792,8 +573,9 @@ function detalheMda() {
       const medio = d.respondidas ? d.tam / d.respondidas : 0, precisa = 100 * medio / (1 + medio);
       const ev = d.respondidas ? 100 * d.ev / d.respondidas : 0, fold = pct(d['todos foldam'], d.respondidas);
       const fraca = d.respondidas < AMOSTRA_MINIMA ? ' fraca' : '';
-      corpo.append(el('tr', {}, [
-        el('th', {}, [el('span', { className: 'tam' }, [el('b', { textContent: cod(faixa) + (ai ? '-AI' : '') }), el('small', { textContent: faixa + (ai ? ' · all-in' : '') })])]),
+      corpo.append(el('tr', { className: k ? '' : 'geral' }, [
+        el('th', {}, [el('span', { className: 'tam' }, k ? [el('b', { textContent: cod(faixa) + (ai ? '-AI' : '') }), el('small', { textContent: faixa + (ai ? ' · all-in' : '') })]
+          : [el('b', { textContent: 'Total' }), el('small', { textContent: 'todos os tamanhos' })])]),
         el('td', { className: 'num', title: `${d.n} de ${no.n} decisões desta situação` }, [el('b', { textContent: `${fmt(100 * d.n / no.n, 1)}%` }), el('small', { textContent: ` ${d.n}` })]),
         el('td', { className: 'num' + fraca, title: tituloIC(d['todos foldam'], d.respondidas) }, [
           el('b', { className: d.respondidas ? (fold >= precisa ? 'bom' : 'ruim') : '', textContent: d.respondidas ? `${fold}%` : '—' }), el('small', { textContent: ` ${d['todos foldam']}` })]),
@@ -802,35 +584,54 @@ function detalheMda() {
         el('td', { className: 'num' + fraca, title: d.respondidas ? `${d.respondidas} bets com resposta` : '' }, [
           el('b', { className: ev > 2 ? 'bom' : ev < -2 ? 'ruim' : 'neutro', textContent: d.respondidas ? `${ev >= 0 ? '+' : ''}${fmt(ev, 0)}` : '—' })]),
         cel(d['1 call']), cel(d['2 calls']), cel(d['3+ calls']), cel(d.aumentado),
-        el('td', { className: 'num', title: 'Quando levou raise, o que ele fez depois' }, [totalDep
+        el('td', { className: 'num', title: 'Quando levou raise, o que o apostador fez depois' }, [totalDep
           ? `F ${pct(dep.Fold, totalDep)}% · C ${pct(dep.Call, totalDep)}% · R ${pct(dep.Raise, totalDep)}%` : '—']),
         // faixa feita só de bets all-in (somadas pelo "all-in junto"): ninguém aposta no turn depois, afunilar daria vazio
-      el('td', {}, [ai || (!separarAI && !(no.tamanhos[acao] ?? {})[faixa]) ? el('span') : botaoAfunilar(faixa, 'aposta'),
-        el('button', { className: 'ver', type: 'button', textContent: 'mãos', title: `As mãos com ${cod(faixa)}${ai ? ' all-in' : ''}`, onclick: () => verMaosMda(k) })]),
+      el('td', {}, [ai || (k && !separarAI && !(no.tamanhos[acao] ?? {})[faixa]) ? el('span') : botaoAfunilar(k ? faixa : null, 'aposta'),
+        el('button', { className: 'ver', type: 'button', textContent: 'mãos', title: k ? `As mãos com ${cod(faixa)}${ai ? ' all-in' : ''}` : 'Todas as mãos desta linha',
+          onclick: () => verMaosMda(k) })]),
       ]));
+    };
+    const tams = tamanhosDaLinha(no.tamanhos[acao] ?? {});
+    if (tams.length > 1) {  // o conjunto de todas as bets desta linha
+      const t = { depois: { Fold: 0, Call: 0, Raise: 0 } };
+      for (const [, d] of tams) {
+        for (const c of ['n', 'todos foldam', '1 call', '2 calls', '3+ calls', 'aumentado', 'respondidas', 'ev', 'tam']) t[c] = (t[c] ?? 0) + (d[c] ?? 0);
+        for (const a of ['Fold', 'Call', 'Raise']) t.depois[a] += d.depois[a];
+      }
+      linhaBet(null, t);
     }
-    cab = ['Tamanho', 'Freq.', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (ele)', ''];
-    nota = 'Freq. = quantas vezes ele fez esta bet com este tamanho, entre todas as decisões desta situação (como a coluna "Fre" do H2N). '
+    for (const [k, d] of tams) linhaBet(k, d);
+    cab = ['Tamanho', 'Freq.', 'Todos foldam', 'Precisa foldar', 'EV blefe', '1 call', '2 calls', '3+ calls', 'Aumentado', 'Depois do raise (o apostador)', ''];
+    nota = 'Freq. = quantas vezes o jogador fez esta bet com este tamanho, entre todas as decisões desta situação (como a coluna "Fre" do H2N). '
       + (separarAI ? '"-AI" = all-in, fora da conta do tamanho. ' : 'As bets all-in estão somadas na faixa do tamanho delas (botão "All-in separado" para ver à parte). ')
       + 'Todos foldam fica verde quando passa do "precisa foldar" (bet ÷ (1 + bet)); EV blefe, em % do pote: +1 pote se todos foldam, −a bet se não. '
       + 'Afunilar segue para a rua seguinte só quem fez essa bet e não levou raise.';
   } else {
     const enf = no.enfrentado ?? {};
-    for (const f of FAIXAS_MDA().filter(f => enf[f])) {
-      const d = enf[f], n = (d.Fold ?? 0) + (d.Call ?? 0) + (d.Raise ?? 0) + (d.Check ?? 0) + (d.Bet ?? 0);
+    const faixasEnf = FAIXAS_MDA().filter(f => enf[f]);
+    const linhaEnf = f => {  // f = a faixa enfrentada; null = o Total
+      const d = f ? enf[f] : faixasEnf.reduce((t, x) => {
+        for (const [c, v] of Object.entries(enf[x])) t[c] = (t[c] ?? 0) + v;
+        return t;
+      }, {});
+      const n = (d.Fold ?? 0) + (d.Call ?? 0) + (d.Raise ?? 0) + (d.Check ?? 0) + (d.Bet ?? 0);
       const cel = (x, cls = '') => el('td', { className: 'num' + (n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(x ?? 0, n) }, [
         el('b', { className: cls, textContent: `${pct(x ?? 0, n)}%` }), el('small', { textContent: ` ${x ?? 0}` })]);
-      corpo.append(el('tr', {}, [
-        el('th', {}, [el('span', { className: 'tam' }, [el('b', { textContent: cod(f) }), el('small', { textContent: f })])]),
+      corpo.append(el('tr', { className: f ? '' : 'geral' }, [
+        el('th', {}, [el('span', { className: 'tam' }, f ? [el('b', { textContent: cod(f) }), el('small', { textContent: f })]
+          : [el('b', { textContent: 'Total' }), el('small', { textContent: 'todos os tamanhos' })])]),
         el('td', { className: 'num' }, [el('b', { textContent: String(n) })]),
         cel(d.Fold, acao === 'Fold' ? 'destaque' : ''), cel(d.Call, acao === 'Call' ? 'destaque' : ''), cel(d.Raise, acao === 'Raise' ? 'destaque' : ''),
         el('td', { className: 'num', title: 'média, mão a mão, de bet ÷ (1 + bet)' }, [`${pct(d.precisa, n)}%`]),
         el('td', {}, [acao === 'Call' && d.Call ? botaoAfunilar(f, 'pagou') : el('span'),
-          el('button', { className: 'ver', type: 'button', textContent: 'mãos', title: `As mãos contra ${cod(f)}`, onclick: () => verMaosMda(f) })]),
+          el('button', { className: 'ver', type: 'button', textContent: 'mãos', title: f ? `As mãos contra ${cod(f)}` : 'Todas as mãos desta linha', onclick: () => verMaosMda(f) })]),
       ]));
-    }
+    };
+    if (faixasEnf.length > 1) linhaEnf(null);
+    faixasEnf.forEach(linhaEnf);
     cab = ['Bet enfrentada', 'Decisões', 'Fold', 'Call', 'Raise', 'Precisa foldar', ''];
-    nota = 'O que ele fez contra cada tamanho de bet, nesta situação. "Precisa foldar" é o fold em que um blefe contra ele empata. '
+    nota = 'O que o jogador fez contra cada tamanho de bet, nesta situação. "Precisa foldar" é o fold em que um blefe empata. '
       + 'Afunilar (no call) segue para a rua seguinte só quem pagou aquele tamanho.';
   }
   // B - B no turn: qual foi a bet do flop? O tamanho vira filtro da linha (o mesmo "afunilar", sem sair da linha).
@@ -838,13 +639,14 @@ function detalheMda() {
     const r = RUAS_MDA[i], ult = lin.slice(-1);
     const lado = ult === 'C' ? 'pagou' : ult === 'B' || ult === 'R' ? 'aposta' : null;
     if (!lado) return null;
-    const atual = caminho[r]?.linha === lin ? caminho[r].faixa ?? '' : '';
-    return el('label', { className: 'mda-sel' + (atual ? ' ativo' : ''),
-      title: `Só as mãos em que ${lado === 'pagou' ? 'a bet que ele pagou' : 'a bet dele'} no ${NOME_RUA[r].toLowerCase()} foi deste tamanho` }, [
-      `${lado === 'pagou' ? 'bet que ele pagou' : 'bet dele'} no ${NOME_RUA[r].toLowerCase()} (${lin})`,
-      el('select', { onchange: e => escolherFaixaAnterior(r, lin, e.target.value, lado) }, [
-        el('option', { value: '', textContent: 'todos os tamanhos', selected: !atual }),
-        ...opcoes.faixas_h2n.map(f => el('option', { value: f, textContent: `${cod(f)} (${f})`, selected: f === atual }))])]);
+    const atual = caminho[r]?.linha === lin ? faixasDe(caminho[r]) : [];
+    return el('div', { className: 'mda-sel' + (atual.length ? ' ativo' : ''),
+      title: `Só as mãos em que ${lado === 'pagou' ? 'a bet que o jogador pagou' : 'a bet que o jogador fez'} no ${NOME_RUA[r].toLowerCase()} foi de um destes tamanhos (marque vários para ver o conjunto)` }, [
+      el('span', { textContent: `${lado === 'pagou' ? 'bet que pagou' : 'bet que fez'} no ${NOME_RUA[r].toLowerCase()} (${lin}):` }),
+      el('div', { className: 'chips' }, [
+        el('button', { className: 'chip', type: 'button', textContent: 'todos', ariaPressed: String(!atual.length), onclick: () => alternarFaixaAnterior(r, lin, null, lado) }),
+        ...opcoes.faixas_h2n.map(f => el('button', { className: 'chip', type: 'button', ariaPressed: String(atual.includes(f)),
+          onclick: () => alternarFaixaAnterior(r, lin, f, lado) }, [`${cod(f)} `, el('small', { textContent: f })]))])]);
   }).filter(Boolean);
   return el('section', { className: 'card mda-detalhe' }, [
     seletores.length ? el('div', { className: 'mda-seletores' }, seletores) : null,
@@ -875,8 +677,17 @@ function verMaosMda(faixa) {
 function desenharMda(rolar = false) {
   if (!mdaDados) return;
   const detalhe = detalheMda();
-  $('mda').replaceChildren(barraMda(), el('div', { className: 'mda-grade' }, RUAS_MDA.map(r => colunaMda(r, mdaDados[r]))), ...(detalhe ? [detalhe] : []));
-  if (detalhe && rolar) detalhe.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  $('mda').replaceChildren(barraMda(), legendaMda(), el('div', { className: 'mda-grade' }, RUAS_MDA.map(r => colunaMda(r, mdaDados[r]))), ...(detalhe ? [detalhe] : []));
+  // o detalhe fica preso na parte de baixo da tela (sticky): aparece na hora do clique, sem rolar a página
+  if (detalhe && rolar) detalhe.scrollTop = 0;
+}
+
+function legendaMda() {
+  return el('p', { className: 'nota mda-legenda' }, [
+    ...Object.entries(LETRA_ACAO).map(([a, l]) => el('span', {}, [el('b', { textContent: l }), ` ${a.toLowerCase()}`])),
+    el('span', {}, [el('b', { textContent: '-AI' }), ' all-in']),
+    el('span', {}, [el('b', { textContent: ' - ' }), ' separa as ruas (X - B = checou no flop, apostou no turn)']),
+    el('span', { textContent: '% cinza = situação com menos de 30 decisões' })]);
 }
 
 async function consultarMda(meu) {
@@ -902,7 +713,7 @@ const LINHAS_GRAFICO = [
 // a linha do jackpot só aparece para quem ganhou jackpot
 const linhasDe = s => LINHAS_GRAFICO.filter(l => !l.so || l.so(s));
 const desligadas = new Set();
-let listaJogadores = null, jogadorSel = lerLocal('bp.jogador'), buscaJogador = '', serieAtual = null;
+let listaJogadores = null, jogadorSel = lerLocal('bp.jogador'), buscaJogador = '', serieAtual = null, mostrarPoucos = false;
 let filtrosJog = lerLocal('bp.filtrosJog') ?? {};  // { n_jogadores: [8, 7], data: { min, max } }
 const bb = (v, casas = 1) => `${v < 0 ? '−' : v > 0 ? '+' : ''}${fmt(Math.abs(v), casas)} BB`;
 const por100 = (v, maos) => (maos ? 100 * v / maos : 0);
@@ -910,7 +721,10 @@ const corValor = v => (v > 0 ? 'bom' : v < 0 ? 'ruim' : '');
 
 function tabelaJogadores() {
   const termo = buscaJogador.trim().toLowerCase();
-  const lista = listaJogadores.jogadores.filter(j => !termo || j.nome.toLowerCase().includes(termo));
+  // com menos de 30 mãos o BB/100 ainda é ruído: fora da lista, a não ser que procure pelo nome ou peça
+  const poucos = listaJogadores.jogadores.filter(j => j.maos < AMOSTRA_MINIMA).length;
+  const lista = listaJogadores.jogadores.filter(j => (termo ? j.nome.toLowerCase().includes(termo)
+    : mostrarPoucos || j.maos >= AMOSTRA_MINIMA || j.nome === jogadorSel));
   const corpo = el('tbody', {}, lista.slice(0, 300).map(j => el('tr', {
     className: 'jogador' + (j.nome === jogadorSel ? ' ativo' : ''), tabIndex: 0,
     onclick: () => escolherJogador(j.nome), onkeydown: e => { if (e.key === 'Enter') escolherJogador(j.nome); },
@@ -932,6 +746,9 @@ function tabelaJogadores() {
         ['EV BB/100', 'BB/100 pelo EV ajustado por all-in']]
         .map(([c, d]) => el('th', d ? { textContent: c, title: d } : { textContent: c })))]), corpo])]),
     lista.length > 300 ? el('p', { className: 'nota', textContent: `mostrando 300 de ${lista.length}: procure pelo nome para achar os outros` }) : null,
+    !termo && poucos ? el('label', { className: 'nota', style: 'display:flex;gap:6px;align-items:center;padding:6px 0 0' }, [
+      el('input', { type: 'checkbox', checked: mostrarPoucos, onchange: e => { mostrarPoucos = e.target.checked; redesenharLista(); } }),
+      `mostrar os ${poucos.toLocaleString('pt-BR')} com menos de ${AMOSTRA_MINIMA} mãos`]) : null,
   ]);
 }
 function redesenharLista() {
@@ -1078,12 +895,12 @@ function desenharJogadores() {
     ...graficoJogador(s, caixa),
     el('p', { className: 'nota', textContent: [
       `${s.maos.toLocaleString('pt-BR')} mãos em ordem cronológica (pela hora do HAND ID), em BB de cada mesa`,
-      'com showdown = mãos em que ele ficou até o fim com mais alguém (mostrando ou não); sem showdown = Net − com showdown',
-      'EV all-in: quando o dinheiro entrou antes do river, ele leva a equity dele em cada pote (todos os boards que faltavam), não o que saiu',
+      'com showdown = mãos em que o jogador ficou até o fim com mais alguém (mostrando ou não); sem showdown = Net − com showdown',
+      'EV all-in: quando o dinheiro entrou antes do river, o jogador leva a própria equity em cada pote (todos os boards que faltavam), não o que saiu',
       ult[5] ? `Net + jackpot: soma os ${fmt(ult[5], 1)} BB de jackpot pagos pela casa, que ficam fora do Net (só poker)` : '',
       'mão com seguro ou jackpot entra para quem tem o saldo batendo com o poker pelas cartas (o jackpot é descontado)',
       listaJogadores.fora.seguro_reconstruido ? `${listaJogadores.fora.seguro_reconstruido} saldos de quem o seguro pagou viraram o resultado do poker (perdeu tudo pelas cartas: menos o que investiu)` : '',
-      listaJogadores.fora.saldo_nao_confere ? `${listaJogadores.fora.saldo_nao_confere} saldos de seguro ficam fora: ele levou parte do pote e o valor depende do resíduo do WPT` : '',
+      listaJogadores.fora.saldo_nao_confere ? `${listaJogadores.fora.saldo_nao_confere} saldos de seguro ficam fora: o jogador levou parte do pote e o valor depende do resíduo do WPT` : '',
       listaJogadores.fora.sem_nick ? `${listaJogadores.fora.sem_nick} mãos sem o nick de alguém ficam fora` : '',
     ].filter(Boolean).join(' · ') }));
 }
@@ -1155,35 +972,27 @@ function desenharConferir() {
   const r = confDados, s = r.saude, m = r.mao;
   const segModo = el('div', { className: 'seg', role: 'group', 'aria-label': 'Modo' }, [
     ['sorteio', 'Sorteio (mede a taxa)'], ['suspeita', `Suspeitas (${s.suspeitas.length})`],
-    ['nicks', confModo === 'nicks' && r.restantes !== undefined ? `Nicks repetidos (${r.restantes})` : 'Nicks repetidos']].map(([v, t]) => el('button', {
+    ['nicks', confModo === 'nicks' && r.restantes !== undefined ? `Nicks repetidos (${r.restantes})` : 'Nicks repetidos'],
+    ['txt', confModo === 'txt' && r.restantes !== undefined ? `Transcrição .txt (${r.restantes})` : 'Transcrição .txt']].map(([v, t]) => el('button', {
     type: 'button', textContent: t, ariaPressed: String(confModo === v), onclick: () => { confModo = v; consultar(); } })));
   const placar = el('span', { className: 'placar' }, s.conferidas
     ? [el('b', { textContent: `${s.conferidas}` }), ` sorteadas conferidas · `, el('b', { textContent: `${s.erros}` }), ` com erro · taxa de erro ≤ `,
       el('b', { textContent: pctTeto(s.teto) }), ' (95%)' + (s.conferidas_total > s.conferidas ? ` · mais ${s.conferidas_total - s.conferidas} da fila de suspeitas` : '')]
     : ['Nenhuma mão sorteada conferida ainda. 100 sem erro dizem "erro < 3%"; 300, "< 1%".']);
   const topo = el('section', { className: 'card conf-topo', style: 'padding:12px 16px' }, [segModo, placar]);
-  if (confModo === 'nicks' && r.modo !== 'nicks') {  // o JS novo chegou, o Python não: o servidor precisa reiniciar
+  if ((confModo === 'nicks' || confModo === 'txt') && r.modo !== confModo) {  // o JS novo chegou, o Python não: o servidor precisa reiniciar
     $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota neutro', textContent:
       'O site está rodando uma versão antiga do servidor, que ainda não conhece este modo. Feche a janela do "Abrir site.bat" e abra de novo.' })]));
     return;
   }
   if (confModo === 'nicks') { $('conferir').replaceChildren(topo, ...conferirNick(r)); return; }
+  if (confModo === 'txt') { $('conferir').replaceChildren(topo, ...conferirTxt(r)); return; }
   if (!m) {
     $('conferir').replaceChildren(topo, el('section', { className: 'card' }, [el('p', { className: 'nota', textContent:
       confModo === 'suspeita' ? 'Nenhuma suspeita esperando conferência.' : 'Todas as mãos já foram conferidas.' })]));
     return;
   }
-  const jogs = el('table', {}, [
-    el('thead', {}, [el('tr', {}, ['Pos', 'Nick', 'Cartas', 'Stack', 'Saldo'].map(c => el('th', { textContent: c })))]),
-    el('tbody', {}, m.jogadores.map(j => el('tr', { className: j.cartas && !j.showdown ? 'olhar' : '',
-      title: j.cartas && !j.showdown ? 'Estas cartas não decidiram o showdown: nenhuma conta confere, só o seu olho.' : '' }, [
-      el('td', { textContent: j.pos + (j.hero ? ' (Hero)' : '') }), el('td', { textContent: j.nome ?? '—' }),
-      el('td', { className: 'carta' }, j.cartas ? cartasEl(j.cartas) : ['—']),
-      el('td', { className: 'num', textContent: fmt(j.stack) }),
-      el('td', { className: 'num ' + corValor(j.net), textContent: fmt(j.net) })])))]);
-  const ruas = el('div', { className: 'rua-linha' }, m.linhas.map(([rua, board, pote, acoes]) => el('div', {}, [
-    el('b', { textContent: NOME_RUA[rua] }), el('span', { className: 'carta' }, cartasEl(board)), ` (${fmt(pote)}) `,
-    acoes.map(([pos, a]) => `${pos} ${a}`).join(' · ')])));
+  const jogs = tabelaLeitura(m), ruas = ruasLeitura(m);
   const duvida = m.pior_rank > m.limiar;
   const corpo = el('section', { className: 'card conf-mao' }, [
     el('h3', {}, [`HAND ID ${m.hand_id}`, el('small', { className: 'muted', textContent: ` · ${m.data ?? ''} · ${m.n} jogadores · valores em BB (print em ${m.unidade})` })]),
@@ -1207,9 +1016,90 @@ function desenharConferir() {
       el('button', { className: 'btn', type: 'button', textContent: 'Pular', onclick: () => consultar(),
         title: 'Outra mão, sem marcar esta' })]),
   ]);
-  $('conferir').replaceChildren(topo, el('div', { className: 'conf-grade' }, [
-    el('section', { className: 'card conf-print' }, [el('img', { src: `/print/${encodeURIComponent(m.png)}`, alt: `Print da mão ${m.hand_id}` })]),
+  $('conferir').replaceChildren(topo, el('div', { className: 'conf-grade' + (printLargo ? ' largo' : '') }, [
+    el('div', { className: 'conf-lado' }, [barraPrint(m.png), el('section', { className: 'card conf-print' }, [
+      el('img', { src: `/print/${encodeURIComponent(m.png)}`, alt: `Print da mão ${m.hand_id}` })])]),
     corpo]));
+}
+
+// A leitura da mão como o banco a guarda (em BB): jogadores e a linha de cada rua.
+function tabelaLeitura(m) {
+  return el('table', {}, [
+    el('thead', {}, [el('tr', {}, ['Pos', 'Nick', 'Cartas', 'Stack', 'Saldo'].map(c => el('th', { textContent: c })))]),
+    el('tbody', {}, m.jogadores.map(j => el('tr', { className: j.cartas && !j.showdown ? 'olhar' : '',
+      title: j.cartas && !j.showdown ? 'Estas cartas não decidiram o showdown: nenhuma conta confere, só o seu olho.' : '' }, [
+      el('td', { textContent: j.pos + (j.hero ? ' (Hero)' : '') }), el('td', { textContent: j.nome ?? '—' }),
+      el('td', { className: 'carta' }, j.cartas ? cartasEl(j.cartas) : ['—']),
+      el('td', { className: 'num', textContent: fmt(j.stack) }),
+      el('td', { className: 'num ' + corValor(j.net), textContent: fmt(j.net) })])))]);
+}
+function ruasLeitura(m) {
+  return el('div', { className: 'rua-linha' }, m.linhas.map(([rua, board, pote, acoes]) => el('div', {}, [
+    el('b', { textContent: NOME_RUA[rua] }), el('span', { className: 'carta' }, cartasEl(board)), ` (${fmt(pote)}) `,
+    acoes.map(([pos, a]) => `${pos} ${a}`).join(' · ')])));
+}
+
+// Transcrição .txt: as mãos cujo .txt (o hand history que vai para o H2N) o Claude achou errado. Ao lado do print:
+// a leitura, o que estava errado, o que a checagem independente (checa_txt.py) acha no .txt de agora, os dois .txt e o
+// parecer do dono. A leitura certa e o arquivo errado são coisas diferentes: o parecer não entra na taxa de erro.
+async function parecerTxt(ok) {
+  const m = confDados?.mao, obs = $('txt-obs')?.value.trim();
+  if (!m) return;
+  if (!ok && !obs) { $('txt-obs').focus(); return; }
+  document.body.classList.add('carregando');
+  const meu = ++pedido;
+  const r = await (await fetch('/api/parecer_txt', { method: 'POST', body: JSON.stringify({ hand_id: m.hand_id, ok, obs }) })).json();
+  if (meu !== pedido) return;
+  document.body.classList.remove('carregando');
+  if (r.erro) { $('conferir').prepend(el('p', { className: 'nota ruim', textContent: 'Erro: ' + r.erro })); return; }
+  confDados = r;
+  desenharConferir();
+}
+
+function conferirTxt(r) {
+  const m = r.mao, t = r.txt;
+  if (!m) {
+    return [el('section', { className: 'card' }, [el('p', { className: 'nota', textContent:
+      r.total ? `As ${r.total} mãos da fila do .txt já têm parecer.` : 'Nenhuma mão na fila do .txt.' })])];
+  }
+  const limpo = !t.problemas_agora.length;
+  const lista = itens => el('ul', { className: 'checklist txt-achados' }, itens.map(i => el('li', { textContent: i })));
+  const pre = texto => el('pre', { className: 'txt-mao' }, [texto ?? '(sem .txt)']);
+  const corpo = el('section', { className: 'card conf-mao' }, [
+    el('h3', {}, [`HAND ID ${m.hand_id}`, el('small', { className: 'muted', textContent:
+      ` · ${r.total - r.restantes + 1} de ${r.total} · ${m.data ?? ''} · leitura em BB (print em ${m.unidade}) · o .txt sai em dinheiro` })]),
+    m.obs ? el('p', { className: 'nota', style: 'padding:0', textContent: `Seguro/jackpot: ${m.obs}` }) : null,
+    el('div', {}, [el('b', { textContent: 'Board ' }), el('span', { className: 'carta' }, cartasEl(m.board))]),
+    tabelaLeitura(m), ruasLeitura(m),
+    el('h4', { textContent: 'O que eu achei errado no .txt (antes de corrigir o Replayer)' }), lista(t.achados),
+    el('h4', { textContent: 'Depois da correção' }),
+    limpo ? el('p', { className: 'nota bom', style: 'padding:0', textContent:
+      'A checagem independente não acha mais nada: as linhas seguem as regras do PokerStars, o pote fecha e quem recolhe é quem leva pelas cartas.' })
+      : lista(t.problemas_agora.map(p => `Ainda: ${p}`)),
+    el('details', { className: 'explica', open: true }, [el('summary', { textContent: 'O .txt de agora (o que vai para o H2N)' }), pre(t.agora)]),
+    el('details', { className: 'explica' }, [el('summary', { textContent: 'O .txt de antes' }), pre(t.antes)]),
+    el('ul', { className: 'checklist' }, [
+      el('li', { textContent: 'compare o .txt de agora com o print: cada ação, cada valor (o print em BB vira dinheiro no .txt) e quem recolhe;' }),
+      el('li', { textContent: 'o seguro não entra no .txt: o segurado aparece com o resultado do poker, não com o da tela.' })]),
+    el('div', { className: 'conf-acoes' }, [
+      el('button', { className: 'btn primario', type: 'button', textContent: 'O .txt está certo', onclick: () => parecerTxt(true) }),
+      el('input', { id: 'txt-obs', placeholder: 'o que está errado (obrigatório em "tem erro")', maxLength: 1000, 'aria-label': 'Parecer', style: 'flex:1 1 260px' }),
+      el('button', { className: 'btn erro', type: 'button', textContent: 'Tem erro', onclick: () => parecerTxt(false) })]),
+  ]);
+  return [el('div', { className: 'conf-grade' + (printLargo ? ' largo' : '') }, [
+    el('div', { className: 'conf-lado' }, [barraPrint(m.png), el('section', { className: 'card conf-print' }, [
+      el('img', { src: `/print/${encodeURIComponent(m.png)}`, alt: `Print da mão ${m.hand_id}` })])]),
+    corpo])];
+}
+
+// O print é alto (mesa + histórico): rola dentro do quadro; "ampliar" dá metade da tela a ele; o link abre em tamanho real.
+let printLargo = lerLocal('bp.printLargo') ?? false;
+function barraPrint(png) {
+  return el('div', { className: 'conf-barra-print' }, [
+    el('span', { className: 'nota', style: 'padding:0', textContent: 'role o print para ver o histórico inteiro' }),
+    el('button', { className: 'btn', type: 'button', textContent: printLargo ? 'reduzir' : 'ampliar',
+      onclick: () => { printLargo = !printLargo; gravarLocal('bp.printLargo', printLargo); desenharConferir(); } }),
+    el('a', { className: 'btn', href: `/print/${encodeURIComponent(png)}`, target: '_blank', rel: 'noopener', textContent: 'tamanho real ↗' })]);
 }
 
 // Nicks repetidos: dois nicks a um caractere de distância que nunca sentaram juntos. Mostra um print de cada (o
@@ -1248,34 +1138,33 @@ function conferirNick(r) {
     el('div', { className: 'lado-a-lado nicks-prints' }, [lado('a'), lado('b')])];
 }
 
-// Hero × população no topo do Painel: onde o jeito dele jogar mais se afasta do field (só vilões).
-function cartaoLeaks(leaks) {
-  if (!leaks?.length) return null;
-  const linhas = leaks.map(l => {
-    const [fh, nh] = l.hero, [fp, np] = l.pop, dif = pct(fh, nh) - pct(fp, np), sig = Math.abs(l.z) >= 2;
-    const tr = el('tr', { className: 'clicavel' + (sig ? ' sig' : ''), tabIndex: 0, title: 'Abrir este spot no Estudo, só com as suas decisões' }, [
-      el('th', { textContent: `${l.secao} · ${l.nome}` }),
-      el('td', { className: 'num' + (nh < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(fh, nh) }, [el('b', { textContent: `${pct(fh, nh)}%` }), el('small', { textContent: ` ${nh}` })]),
-      el('td', { className: 'num', title: tituloIC(fp, np) }, [`${pct(fp, np)}%`]),
-      el('td', { className: 'num' + (sig ? ' neutro' : '') }, [`${dif > 0 ? '+' : ''}${dif} pp`]),
-      el('td', { className: 'num z', title: '|z| ≥ 2: a diferença dificilmente é acaso' }, [fmt(l.z, 1)]),
+// Hero × população no topo do Painel: onde o jeito dele jogar mais se afasta do field (só vilões). Uma linha por spot:
+// Fold/Call/Raise contra a mesma aposta ficam juntos (o BB no total é do spot, não da ação).
+function cartaoLeaks(spots) {
+  if (!spots?.length) return null;
+  const linhas = spots.map(l => {
+    // uma linha de texto por ação do spot, na mesma ordem em todas as colunas
+    const col = (f, cls = s => '') => l.stats.map(s => el('div', { className: cls(s) }, [s.acao ? el('small', { textContent: `${s.acao} ` }) : null, ...f(s)]));
+    const dif = s => pct(s.hero[0], s.hero[1]) - pct(s.pop[0], s.pop[1]);
+    const nh = l.stats[0].hero[1];
+    return el('tr', { className: l.sig ? 'sig' : '' }, [
+      el('th', {}, [`${l.secao} · ${l.nome}`, el('small', { className: 'muted', textContent: ` ${nh} suas` })]),
+      el('td', { className: 'num' + (nh < AMOSTRA_MINIMA ? ' fraca' : '') }, col(s => [el('b', { title: tituloIC(...s.hero), textContent: `${pct(...s.hero)}%` })])),
+      el('td', { className: 'num' }, col(s => [el('span', { title: tituloIC(...s.pop), textContent: `${pct(...s.pop)}%` })])),
+      el('td', { className: 'num' }, col(s => [`${dif(s) > 0 ? '+' : ''}${dif(s)} pp`], s => (Math.abs(s.z) >= 2 && l.sig ? 'neutro' : ''))),
+      el('td', { className: 'num z', title: '|z| ≥ 2: a diferença dificilmente é acaso' }, col(s => [fmt(s.z, 1)])),
       el('td', { className: 'num', title: 'lucro médio por decisão (BB), você × população' }, [l.lucro_hero === null ? '—' : `${fmt(l.lucro_hero, 1)} × ${fmt(l.lucro_pop, 1)}`]),
       el('td', { className: 'num' }, [l.bb === null ? '—' : el('b', { className: corValor(l.bb), textContent: bb(l.bb, 0) })])]);
-    tr.onclick = tr.onkeydown = e => {
-      if (e.type !== 'click' && e.key !== 'Enter') return;
-      filtros = { ...structuredClone(l.base), hero: [1] };
-      trocarVista('estudo');
-    };
-    return tr;
   });
   return el('section', { className: 'card leaks' }, [
-    el('h2', {}, ['Você × população', el('small', { className: 'muted', textContent: ' as stats do painel, das que mais custam para as que mais rendem' })]),
+    el('h2', {}, ['Você × população', el('small', { className: 'muted', textContent: ` primeiro os ${spots.filter(s => s.sig).length} spots em que a diferença não é acaso, do que mais custa para o que mais rende` })]),
     el('div', { className: 'rolar' }, [el('table', {}, [
       el('thead', {}, [el('tr', {}, ['Spot', 'Você', 'População', 'Diferença', 'z', 'Lucro/decisão', 'BB no total'].map(c => el('th', { textContent: c })))]),
       el('tbody', {}, linhas)])]),
     el('p', { className: 'nota', textContent: 'População = só os vilões (sem você). BB no total = (seu lucro médio no spot − o da população) × suas decisões: '
-      + 'quanto o seu jeito de jogar o spot rendeu a mais ou a menos que o do field. O lucro mistura sorte de carta; as linhas apagadas têm |z| < 2 '
-      + '(a diferença de frequência pode ser acaso). Mãos com seguro/jackpot ficam fora do lucro.' })]);
+      + 'quanto o seu jeito de jogar o spot rendeu a mais ou a menos que o do field, uma vez por spot (Fold, Call e Raise contra a mesma aposta '
+      + 'dividem o mesmo número). O lucro mistura sorte de carta; as linhas apagadas têm |z| < 2 em todas as ações ou menos de 30 decisões suas '
+      + '(a diferença pode ser acaso). Mãos com seguro/jackpot ficam fora do lucro.' })]);
 }
 
 // ------------------------------------------------------------------------- Ver mãos + replayer
@@ -1307,7 +1196,7 @@ function painelMaos(corpo, rotulo = 'Ver mãos', ja = false) {
     caixa.replaceChildren(
       el('div', { className: 'lista-maos' }, carregadas.map((m, i) => linhaMao(m, () => abrirReplayer(carregadas, i)))),
       el('div', { className: 'maos-rodape' }, [
-        el('span', { className: 'nota', style: 'padding:0', textContent: `${carregadas.length} de ${total.toLocaleString('pt-BR')} ${total === 1 ? 'decisão' : 'decisões'} · ▶ abre a mesa` }),
+        el('span', { className: 'nota', style: 'padding:0', textContent: `${carregadas.length} de ${total.toLocaleString('pt-BR')} ${corpo.linha ? (total === 1 ? 'mão' : 'mãos') : total === 1 ? 'decisão' : 'decisões'} · ▶ abre a mesa` }),
         falta > 0 ? el('button', { className: 'btn', type: 'button', textContent: `mais ${Math.min(POR_PAGINA, falta)}`, onclick: () => buscar(POR_PAGINA) }) : null,
         falta > 0 ? el('button', { className: 'btn', type: 'button', textContent: total > maxTodas ? `ver as ${maxTodas.toLocaleString('pt-BR')} mais recentes` : `ver todas (${total.toLocaleString('pt-BR')})`,
           onclick: () => buscar(0) }) : null]));
@@ -1414,242 +1303,108 @@ async function abrirReplayer(lista, inicio) {
 
 // ------------------------------------------------------------------------- consulta e desenho
 
-function quadrosDeSizing(r) {
-  const temBets = Object.values(r.grafico).some(g => g.usos);
-  const temDefesa = Object.values(r.defesa).some(d => d.n);
-  if (temDefesa && !temBets) {
-    return [el('div', { className: 'lado-a-lado' }, [cartaoDefesa(r.defesa), cartaoGrafico(pontosDefesa(r.defesa), 'defesa')])];
-  }
-  const quadros = [el('div', { className: 'lado-a-lado' }, [cartaoResposta(r.grafico), cartaoGrafico(pontosAtaque(r.grafico), 'ataque')])];
-  if (temDefesa) quadros.push(cartaoDefesa(r.defesa));
-  return quadros;
-}
-
-function barraQuadros() {
-  const algumAberto = Object.values(abertos).every(v => v !== false) || Object.keys(abertos).length === 0;
-  return el('div', { className: 'barra-quadros' }, [el('button', { className: 'btn', id: 'minimizar', type: 'button',
-    textContent: algumAberto ? 'Minimizar tudo' : 'Abrir todos os quadros', onclick: minimizarTudo })]);
-}
-
 let pedido = 0;
 let vista = ['painel', 'mda', 'jogadores', 'conferir'].includes(lerLocal('bp.vista2')) ? lerLocal('bp.vista2') : 'estudo';
-let filtroA = lerLocal('bp.filtroA');
+let filtrosPainel = lerLocal('bp.filtrosPainel') ?? {};  // { data: { min, max } }
 
 async function consultar() {
   if (!opcoes) return;  // trocou de aba durante a carga: o início chama trocarVista(vista) quando as opções chegarem
   const meu = ++pedido;
-  montarComando();
-  mostrarAtivos();
+  if (vista === 'mda') mostrarAtivos();
   document.body.classList.add('carregando');
   if (vista === 'painel') return consultarPainel(meu);
   if (vista === 'mda') return consultarMda(meu);
   if (vista === 'jogadores') return consultarJogadores(meu);
   if (vista === 'conferir') return consultarConferir(meu);
-  const [r, a] = await Promise.all([
-    fetch('/api/consulta', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json()),
-    filtroA ? fetch('/api/consulta', { method: 'POST', body: JSON.stringify(filtroA) }).then(x => x.json()) : null]);
+  const r = await fetch('/api/linha', { method: 'POST', body: JSON.stringify({ linha: linhaSel }) }).then(x => x.json());
   if (meu !== pedido) return;  // chegou uma consulta mais nova enquanto esta voltava
   document.body.classList.remove('carregando');
   if (r.erro) { $('estudo').replaceChildren(el('p', { className: 'nota', textContent: 'Erro: ' + r.erro })); return; }
-  if (!r.geral) {
-    $('estudo').replaceChildren(barraQuadros(), cartaoMesa(r.mesa), el('section', { className: 'card' }, [
-      el('p', { className: 'nota', textContent: 'Nenhuma decisão com estes filtros. Tire algum filtro (× nas pílulas acima).' })]));
-    return;
-  }
-  $('estudo').replaceChildren(
-    barraQuadros(),
-    cartaoMesa(r.mesa),
-    cartaoRelatorio(r, a?.geral),
-    ...quadrosDeSizing(r),
-    el('div', { className: 'linha-cards' }, [
-      cartaoDistribuicao('forca', 'Força da mão', 'categorias do H2N, nesta rua', r.forca, opcoes.forcas,
-        'Só aparece quem tem cartas conhecidas: o Hero e quem mostrou no showdown (puxa para mãos fortes).'),
-      cartaoDistribuicao('draws', 'Draws', 'flop e turn, entre as decisões com draw', r.draw, opcoes.draws)]),
-    cartao('maos', 'Mãos', 'as decisões deste filtro, da mais nova para a mais velha; ▶ reproduz a mesa',
-      [el('div', { style: 'padding:12px 16px' }, [painelMaos({ filtros }, `Ver mãos (${r.geral.n.toLocaleString('pt-BR')} decisões)`)])]),
-  );
+  linhaDados = r;
+  desenharLinha();
+}
+
+function barraPainel() {
+  const data = (lado, rot) => el('input', { type: 'date', value: filtrosPainel.data?.[lado] ?? '', 'aria-label': rot,
+    min: opcoes.datas?.[0] ?? '', max: opcoes.datas?.[1] ?? '', onchange: e => {
+      const d = { ...(filtrosPainel.data ?? {}), [lado]: e.target.value };
+      filtrosPainel = d.min || d.max ? { data: d } : {};
+      gravarLocal('bp.filtrosPainel', filtrosPainel);
+      consultar();
+    } });
+  return el('div', { className: 'grupo-cmd cmd-datas' }, [el('span', { textContent: 'Período (opcional): ver se um leak corrigido sumiu' }),
+    el('div', { className: 'faixa' }, [data('min', 'Data inicial'), data('max', 'Data final')])]);
 }
 
 async function consultarPainel(meu) {
+  const corpo = JSON.stringify(filtrosPainel);
   const [r, leaks] = await Promise.all([
-    fetch('/api/painel', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json()),
-    fetch('/api/leaks', { method: 'POST', body: JSON.stringify(filtros) }).then(x => x.json())]);
+    fetch('/api/painel', { method: 'POST', body: corpo }).then(x => x.json()),
+    fetch('/api/leaks', { method: 'POST', body: corpo }).then(x => x.json())]);
   if (meu !== pedido) return;
   document.body.classList.remove('carregando');
   if (!Array.isArray(r)) { $('painel').replaceChildren(el('p', { className: 'nota', textContent: 'Erro: ' + (r.erro ?? '') })); return; }
   const secoes = {};
   for (const s of r) (secoes[s.secao] ??= []).push(s);
   $('painel').replaceChildren(
-    ...(Array.isArray(leaks) && !filtros.hero ? [cartaoLeaks(leaks)].filter(Boolean) : []),
-    el('p', { className: 'nota', style: 'padding:0', textContent: 'Stats prontas do field. Os filtros da barra de cima valem para todas. Clique numa linha para abrir o spot no Estudo.' }),
+    barraPainel(),
+    ...(Array.isArray(leaks) ? [cartaoLeaks(leaks)].filter(Boolean) : []),
+    el('p', { className: 'nota', style: 'padding:0', textContent: 'Stats prontas do field (você incluído).' }),
     el('div', { className: 'painel-grade' }, Object.entries(secoes).map(([secao, stats]) => el('section', { className: 'card' }, [
       el('h2', { textContent: secao }),
       el('table', {}, [el('tbody', {}, stats.map(s => {
         const [f, n] = s.v;
-        const tr = el('tr', { className: 'clicavel', tabIndex: 0, title: 'Abrir este spot no Estudo' }, [
+        return el('tr', {}, [
           el('th', { textContent: s.nome }),
           el('td', { className: 'num' + (n < AMOSTRA_MINIMA ? ' fraca' : ''), title: tituloIC(f, n) }, [
             el('b', { textContent: n ? `${pct(f, n)}%` : '—' })]),
           el('td', { className: 'num', style: 'color:var(--muted)', textContent: n.toLocaleString('pt-BR') })]);
-        tr.onclick = tr.onkeydown = e => {
-          if (e.type !== 'click' && e.key !== 'Enter') return;
-          filtros = { ...filtros, ...structuredClone(s.base) };
-          trocarVista('estudo');
-        };
-        return tr;
       }))])]))));
 }
 
 function trocarVista(v) {
   vista = v;
   gravarLocal('bp.vista2', v);
-  $('estudo').hidden = v !== 'estudo';
-  $('painel').hidden = v !== 'painel';
-  $('mda').hidden = v !== 'mda';
-  $('jogadores').hidden = v !== 'jogadores';
-  $('conferir').hidden = v !== 'conferir';
-  $('comando').hidden = v === 'mda' || v === 'jogadores' || v === 'conferir';
-  $('ativos').hidden = v === 'jogadores' || v === 'conferir';  // na MDA, rua/situação/linha vêm da árvore; Jogadores tem os seus
-  for (const aba of ['estudo', 'painel', 'mda', 'jogadores', 'conferir']) $('aba-' + aba).setAttribute('aria-selected', String(v === aba));
+  for (const aba of ['estudo', 'painel', 'mda', 'jogadores', 'conferir']) {
+    $(aba).hidden = v !== aba;
+    $('aba-' + aba).setAttribute('aria-selected', String(v === aba));
+  }
+  $('ferramentas').hidden = v !== 'estudo';  // salvar e exportar agem sobre a linha do Estudo
+  $('ativos').hidden = v !== 'mda';          // as pílulas da posição e da mesa escolhidas na MDA
   mudou();
 }
 
 function mudou() {
-  history.replaceState(null, '', Object.keys(filtros).length ? '#' + encodeURIComponent(JSON.stringify(filtros)) : '#');
-  if ($('avancado').classList.contains('aberto')) montarAvancado();
+  history.replaceState(null, '', vista === 'estudo' && Object.keys(linhaSel).length ? '#' + encodeURIComponent(JSON.stringify({ linha: linhaSel })) : '#');
+  gravarLocal('bp.filtros', filtros);
   consultar();
 }
 
-// ------------------------------------------------------------------------- gaveta "Mais filtros"
-
-function controleFiltro([col, nome, tipo]) {
-  const caixa = el('div', { className: 'filtro' }, [el('label', { textContent: nome })]);
-  if (tipo === 'faixa' || tipo === 'datas') {
-    const [mn, mx] = tipo === 'datas' ? opcoes.datas ?? [] : opcoes.faixa[col] ?? [];
-    const entrada = (lado, chave) => el('input', {
-      type: tipo === 'datas' ? 'date' : 'number', step: 'any', min: mn ?? '', max: mx ?? '',
-      placeholder: `${lado} ${fmt(chave === 'min' ? mn : mx)}`, value: filtros[col]?.[chave] ?? '', 'aria-label': `${nome} ${lado}`,
-      onchange: e => {
-        const antes = Array.isArray(filtros[col]) ? {} : (filtros[col] ?? {});
-        const f = { ...antes, [chave]: e.target.value };
-        if (!f.min && !f.max) delete filtros[col]; else filtros[col] = f;
-        mudou();
-      },
-    });
-    caixa.append(el('div', { className: 'faixa' }, [entrada('mín', 'min'), 'até', entrada('máx', 'max')]));
-    return caixa;
-  }
-  const valores = tipo === 'faixas' ? opcoes.faixas : tipo === 'tags' ? opcoes.tags : ordenar(opcoes.lista[col] ?? [], col);
-  const chips = el('div', { className: 'chips' });
-  const marcados = Array.isArray(filtros[col]) ? filtros[col] : [];  // nos tamanhos pode ser a faixa livre {min, max}
-  for (const v of valores) {
-    chips.append(el('button', { className: 'chip', type: 'button', textContent: rotulo(col, v), ariaPressed: String(marcados.includes(v)), onclick: () => {
-      const atual = new Set(marcados);
-      atual.has(v) ? atual.delete(v) : atual.add(v);
-      if (atual.size) filtros[col] = [...atual]; else delete filtros[col];
-      mudou();
-    } }));
-  }
-  caixa.append(chips);
-  if (tipo === 'faixas') caixa.append(faixaLivre(col));
-  return caixa;
-}
-
-// A barrinha de tamanho: uma faixa livre "de X até Y × pote" no lugar dos chips. Até no máximo = sem teto.
-const TETO_BARRA = 3;
-function faixaLivre(col) {
-  const v = filtros[col];
-  const ativa = v && !Array.isArray(v);
-  let de = ativa ? Number(v.min || 0) : 0;
-  let ate = ativa && v.max !== '' && v.max !== undefined ? Number(v.max) : TETO_BARRA;
-  const rotuloFaixa = el('b');
-  const mostrar = () => { rotuloFaixa.textContent = `${fmt(de)} até ${ate >= TETO_BARRA ? `${fmt(TETO_BARRA)}+ (sem teto)` : fmt(ate)} × pote`; };
-  const aplicar = () => { filtros[col] = { min: de, max: ate >= TETO_BARRA ? '' : ate }; mudou(); };
-  const barra = (valor, lado) => el('input', { type: 'range', min: 0, max: TETO_BARRA, step: 0.01, value: valor, 'aria-label': `${DEF[col][1]}: ${lado}`,
-    oninput: e => {
-      const x = Number(e.target.value);
-      if (lado === 'de') de = Math.min(x, ate); else ate = Math.max(x, de);
-      e.target.value = lado === 'de' ? de : ate;
-      caixaDe.value = de; caixaAte.value = ate >= TETO_BARRA ? '' : ate;
-      mostrar();
-    }, onchange: aplicar });
-  const numero = (valor, lado) => el('input', { type: 'number', min: 0, max: TETO_BARRA, step: 0.01, value: valor,
-    placeholder: lado === 'até' ? 'sem teto' : '0', 'aria-label': `${DEF[col][1]}: ${lado} (número)`,
-    onchange: e => {
-      const x = e.target.value === '' ? (lado === 'de' ? 0 : TETO_BARRA) : Math.max(0, Number(e.target.value));
-      if (lado === 'de') de = Math.min(x, ate); else ate = Math.max(x, de);
-      aplicar();
-    } });
-  const caixaDe = numero(de, 'de'), caixaAte = numero(ate >= TETO_BARRA ? '' : ate, 'até');
-  mostrar();
-  return el('div', { className: 'faixa-livre' + (ativa ? ' ativa' : '') }, [
-    el('div', { className: 'faixa-livre-topo' }, [el('span', { textContent: ativa ? 'Faixa livre (ligada): ' : 'Ou uma faixa livre: ' }), rotuloFaixa,
-      ativa ? el('button', { className: 'chip', type: 'button', textContent: 'tirar', onclick: () => { delete filtros[col]; mudou(); } }) : null]),
-    el('div', { className: 'faixa-livre-barras' }, [el('span', { textContent: 'de' }), barra(de, 'de'), caixaDe]),
-    el('div', { className: 'faixa-livre-barras' }, [el('span', { textContent: 'até' }), barra(ate, 'até'), caixaAte]),
-  ]);
-}
-
-function montarAvancado() {
-  $('avancado-corpo').replaceChildren(...CARTOES.map(([titulo, ex, fs]) => el('section', { className: 'cartao-f' }, [
-    el('h3', { textContent: titulo }), ex ? el('p', { className: 'ex', textContent: ex }) : null, ...fs.map(controleFiltro)])));
-}
-function abrirAvancado() { montarAvancado(); $('avancado').classList.add('aberto'); $('fundo').hidden = false; }
-function fecharAvancado() { $('avancado').classList.remove('aberto'); $('fundo').hidden = true; }
-
-// ------------------------------------------------------------------------- filtros prontos, salvos, exportar
-
-const PRESETS = {
-  'Flop: tamanho da bet quando ninguém apostou': { rua: ['flop'], situacao: ['livre'], _agrupar: 'tamanho' },
-  'Flop: contra bet, por tamanho enfrentado': { rua: ['flop'], situacao: ['enfrenta aposta'], _agrupar: 'tamanho_enfrentado' },
-  'Flop: check-raise': { rua: ['flop'], situacao: ['enfrenta aposta'], checou_antes: [1] },
-  'Turn: c-bet do agressor do flop': { rua: ['turn'], situacao: ['livre'], agressor_anterior: [1] },
-  'Turn: probe depois do flop checado': { rua: ['turn'], situacao: ['livre'], rua_anterior_checada: [1] },
-  'River: contra bet, por tamanho enfrentado': { rua: ['river'], situacao: ['enfrenta aposta'], _agrupar: 'tamanho_enfrentado' },
-  'Linha: B50 no flop e no turn → river': { rua: ['river'], situacao: ['livre'], linha_flop: ['B'], tam_flop: ['0,46–0,66'],
-    linha_turn: ['B'], tam_turn: ['0,46–0,66'] },
-  'Turn: quem pagou bet pequena (até 0,15) no flop, contra bet': { rua: ['turn'], situacao: ['enfrenta aposta'],
-    linha_flop: ['C', 'XC'], enf_flop: { min: 0, max: 0.15 }, _agrupar: 'tamanho_enfrentado' },
-  'Por posição (todas as ruas)': { _agrupar: 'pos' },
-  'Por força da mão no flop': { rua: ['flop'], _agrupar: 'forca' },
-};
+// ------------------------------------------------------------------------- linhas salvas, exportar
 
 function montarListas() {
-  const p = $('presets');
-  p.replaceChildren(el('option', { value: '', textContent: 'Filtros prontos…' }),
-    ...Object.keys(PRESETS).map(n => el('option', { value: n, textContent: n })));
-  p.onchange = () => { if (p.value) { filtros = structuredClone(PRESETS[p.value]); p.value = ''; trocarVista('estudo'); } };
   const s = $('salvos');
-  const salvos = lerLocal('bp.salvos') ?? {};
-  s.replaceChildren(el('option', { value: '', textContent: 'Meus filtros…' }),
+  const salvos = lerLocal('bp.linhas') ?? {};
+  s.replaceChildren(el('option', { value: '', textContent: 'Minhas linhas…' }),
     ...Object.keys(salvos).map(n => el('option', { value: n, textContent: n })));
-  s.onchange = () => { if (s.value) { filtros = structuredClone(salvos[s.value]); s.value = ''; mudou(); } };
+  s.onchange = () => { if (s.value) { linhaSel = structuredClone(salvos[s.value]); limparLinha(); s.value = ''; trocarVista('estudo'); } };
 }
 
 $('salvar').onclick = () => {
-  const nome = prompt('Nome do filtro:');
+  const nome = prompt('Nome da linha:');
   if (!nome) return;
-  const salvos = lerLocal('bp.salvos') ?? {};
-  salvos[nome] = filtros;
-  gravarLocal('bp.salvos', salvos);
+  const salvos = lerLocal('bp.linhas') ?? {};
+  salvos[nome] = linhaSel;
+  gravarLocal('bp.linhas', salvos);
   montarListas();
 };
-$('fixarA').onclick = () => {
-  filtroA = filtroA ? null : structuredClone(filtros);
-  gravarLocal('bp.filtroA', filtroA);
-  $('fixarA').textContent = filtroA ? 'Parar de comparar' : 'Fixar como A';
-  consultar();
-};
 $('exportar').onclick = async () => {
-  const res = await fetch('/api/exportar', { method: 'POST', body: JSON.stringify(filtros) });
+  const res = await fetch('/api/exportar', { method: 'POST', body: JSON.stringify({ linha: linhaSel }) });
   const nome = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'bombpot.txt';
   const link = el('a', { href: URL.createObjectURL(await res.blob()), download: nome });
   link.click();
   URL.revokeObjectURL(link.href);
 };
-$('fechar-avancado').onclick = fecharAvancado;
-$('fundo').onclick = fecharAvancado;
-document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharAvancado(); });
 $('aba-estudo').onclick = () => trocarVista('estudo');
 $('aba-painel').onclick = () => trocarVista('painel');
 $('aba-mda').onclick = () => trocarVista('mda');
@@ -1660,15 +1415,10 @@ $('aba-conferir').onclick = () => trocarVista('conferir');
 
 (async () => {
   opcoes = await (await fetch('/api/opcoes')).json();
-  ORDEM.push(...opcoes.forcas, ...opcoes.draws, 'todos foldam', 'pago', 'aumentado');
   $('info').textContent = `${opcoes.maos.toLocaleString('pt-BR')} bomb pots`;
   desenharSelo(opcoes.saude);
-  try { filtros = location.hash.length > 1 ? JSON.parse(decodeURIComponent(location.hash.slice(1))) : {}; } catch { filtros = {}; }
-  // filtro antigo de jogadores em mín/máx vira a lista que a barra de comando usa
-  const j = filtros.n_jogadores;
-  if (j && !Array.isArray(j) && j.min && j.max) filtros.n_jogadores = Array.from({ length: j.max - j.min + 1 }, (_, i) => Number(j.max) - i);
-  delete filtros.hero;
-  $('fixarA').textContent = filtroA ? 'Parar de comparar' : 'Fixar como A';
+  try { linhaSel = JSON.parse(decodeURIComponent(location.hash.slice(1))).linha ?? {}; } catch { linhaSel = {}; }
+  limparLinha();  // link antigo: tira o que não existe mais
   montarListas();
   trocarVista(vista);
 })();

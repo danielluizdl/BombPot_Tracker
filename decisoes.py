@@ -33,6 +33,7 @@ CREATE TABLE decisoes (
   hand_id TEXT NOT NULL, rua TEXT NOT NULL, ordem INTEGER NOT NULL,
   pos TEXT NOT NULL,            -- posicao da mesa (SB, BB, UTG ... BTN)
   pos_rel TEXT NOT NULL,        -- '1º a agir', 'meio', 'último' entre os vivos da rua
+  ordem_rua INTEGER NOT NULL,   -- 1 = primeiro a agir entre os vivos do comeco da rua, 2 = segundo...
   ip INTEGER NOT NULL,          -- 1 = ultimo a agir entre os vivos da rua
   hero INTEGER NOT NULL,
   n_jogadores INTEGER NOT NULL, -- sentados na mao
@@ -72,10 +73,34 @@ CREATE TABLE decisoes (
                                 -- agora enfrenta raise -> forma BF/BC/BR; 'X' = checou e agora enfrenta bet -> XF/XC/XR)
   n_calls INTEGER,              -- so em Bet/Raise: quantos pagaram antes da proxima agressao
   prox_acao TEXT,               -- so em Bet/Raise que levou raise: o que ele fez depois (Fold, Call, Raise)
+  risco REAL,                   -- Bet/Raise: o que ele poe agora / pote antes da acao (na bet = tamanho; no raise inclui
+                                -- o call embutido): e o que um blefe arrisca para ganhar o pote; precisa = risco / (1 + risco)
+  risco_enfrentado REAL,        -- o risco da ultima bet/raise que ele enfrenta (para o fold que um blefe contra ele precisa)
   PRIMARY KEY (hand_id, ordem)
 );
 CREATE INDEX decisoes_rua_sit ON decisoes (rua, situacao);
+DROP TABLE IF EXISTS ruas;
+CREATE TABLE ruas (             -- a historia da mao, uma linha por street jogada (o filtro "linha da mao" do Estudo)
+  hand_id TEXT NOT NULL, rua TEXT NOT NULL,
+  n_jogadores INTEGER NOT NULL, n_vivos INTEGER NOT NULL, data TEXT,
+  acao INTEGER NOT NULL,        -- 1 = alguem apostou nesta street; 0 = todos deram check (fold sem bet nao conta)
+  pos1 TEXT,                    -- quem fez a 1a bet
+  tam1 REAL,                    -- 1a bet / pote
+  allin1 INTEGER,
+  mesmo_agressor INTEGER,       -- 1 = a 1a bet e de quem fez a ultima bet/raise da street anterior; NULL sem agressor antes
+  aumento INTEGER,              -- 1 = alguem aumentou depois da 1a bet
+  pos_raise TEXT,               -- quem deu o 1o raise
+  raise_x REAL,                 -- 1o raise (total na street) / 1a bet: 3 = aumentou para 3x a bet
+  n_raises INTEGER,
+  fim TEXT,                     -- 'levou' = todos foldaram para o ultimo agressor; 'pago' = alguem pagou
+  raise_risco REAL,             -- 1o raise: o que ele poe agora / pote antes dele (o que o blefe de raise arrisca)
+  n_calls INTEGER,              -- quantos pagaram a ultima bet/raise da street (0 quando todos foldaram)
+  reraise_x REAL,               -- 2o raise (total na street) / 1o raise (total): 3 = re-raise para 3x o raise
+  reraise_risco REAL,           -- 2o raise: o que ele poe agora / pote antes dele
+  PRIMARY KEY (hand_id, rua)
+);
 """
+COLUNAS_RUAS = 19
 
 
 def carta(s: str):
@@ -180,6 +205,7 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
     pagou: dict[str, dict[str, float]] = {r: {} for r in RUAS}  # rua -> jogador -> tamanho da bet que ele pagou
     tam_antes: list[tuple] = []  # por linha: (tam_flop, tam_turn, enf_flop, enf_turn) do jogador ate a rua da decisao
     atual_antes: list[str] = []  # por linha: as letras dele nesta rua antes da decisao
+    riscos: list[tuple] = []  # por linha: (risco, risco_enfrentado)
     resposta_extra: dict[int, tuple] = {}  # linha de bet/raise -> (n_calls, prox_acao)
     tags = ["|".join(tags_rua(todas, 1)), "|".join(tags_rua(todas, 1) + tags_rua(todas, 2))]
     agressor_anterior = None
@@ -196,6 +222,7 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
         investido: dict[str, float] = defaultdict(float)
         maior = 0.0
         ultima_agressao = None  # fracao do pote da ultima bet/raise
+        ultimo_risco = None     # e o risco dela (o que o agressor pos / pote antes dele)
         raises = 0
         agressor = None
         checou: set[str] = set()
@@ -226,12 +253,16 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
             elif verbo == "Raise" and pote:
                 pagar = maior - investido[p]
                 tamanho = round(((valor or 0) - maior) / (pote + pagar), 3)
+            risco = tamanho if verbo == "Bet" else \
+                round(((valor or 0) - investido[p]) / pote, 3) if verbo == "Raise" and pote else None
+            riscos.append((risco, ultimo_risco if situacao != "livre" else None))
             da_rua.append((len(saida), verbo, p))
             atual_antes.append(letras[rua].get(p, ""))
             gasto_antes.append(investido_mao[p] + investido[p])
             saida.append([
                 hid, rua, len(saida), p,
                 "1º a agir" if p == ordem_vivos[0] else "último" if p == ordem_vivos[-1] else "meio",
+                ordem_vivos.index(p) + 1,
                 int(p == ordem_vivos[-1]), j["hero"], n, n_vivos, round(pote or 0, 2), spr,
                 situacao, ultima_agressao if situacao != "livre" else None,
                 vezes[p], int(p in checou), int(p == agressor_anterior),
@@ -258,10 +289,10 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
             # estado depois da acao
             if verbo == "Bet":
                 investido[p] = valor or 0
-                maior, ultima_agressao, agressor = investido[p], tamanho, p
+                maior, ultima_agressao, ultimo_risco, agressor = investido[p], tamanho, risco, p
             elif verbo == "Raise":
                 investido[p] = valor or 0
-                maior, ultima_agressao, agressor = investido[p], tamanho, p
+                maior, ultima_agressao, ultimo_risco, agressor = investido[p], tamanho, risco, p
                 raises += 1
             elif verbo == "Call":
                 # no call normal o valor e o complemento; no call all-in (e no all-in por menos, o "Raise" do WPT)
@@ -296,7 +327,59 @@ def linhas_da_mao(hid: str, n: int, ante: float, board: str, acoes: list, jog: d
         linha.extend(antes)
         linha.append(atual_antes[i])
         linha.extend(resposta_extra.get(i, (None, None)))
+        linha.extend(riscos[i])
     return [tuple(linha) for linha in saida]
+
+
+def ruas_da_mao(hid: str, n: int, acoes: list, jog: dict) -> list[tuple]:
+    """Uma linha por street jogada: a 1a bet (quem, tamanho), o raise que veio depois (em vezes a 1a bet) e como a
+    street terminou. Mesmos quirks do WPT que `linhas_da_mao`: "Raise" sem aposta = Bet; "Call 0" sem aposta = check;
+    "Raise" all-in por menos que a bet = call."""
+    vivos, data, saida, agressor_antes = set(jog), data_do_id(hid), [], None
+    for rua in RUAS:
+        acts = [a for a in acoes if a[0] == rua and a[1] in jog and a[2] in ACOES]
+        if not acts:
+            break
+        n_vivos, maior, pos1, tam1, allin1, bet1 = len(vivos), 0.0, None, None, None, None
+        n_raises, pos_raise, raise_x, raise_risco, agressor, calls = 0, None, None, None, None, 0
+        raise1, reraise_x, reraise_risco = None, None, None
+        investido: dict[str, float] = defaultdict(float)
+        for _, p, verbo, valor, allin, pote in acts:
+            if verbo == "Raise" and maior == 0:
+                verbo = "Bet"
+            if verbo == "Call" and maior == 0 and not valor:
+                verbo = "Check"
+            if verbo == "Raise" and (valor or 0) <= maior:
+                verbo = "Call"
+            if verbo == "Bet":
+                pos1, bet1, allin1 = p, valor or 0, allin
+                tam1 = round(bet1 / pote, 3) if pote else None
+            elif verbo == "Raise":
+                n_raises += 1
+                if n_raises == 1:
+                    pos_raise, raise_x = p, round((valor or 0) / bet1, 2) if bet1 else None
+                    raise_risco = round(((valor or 0) - investido[p]) / pote, 3) if pote else None
+                    raise1 = valor or 0
+                elif n_raises == 2:
+                    reraise_x = round((valor or 0) / raise1, 2) if raise1 else None
+                    reraise_risco = round(((valor or 0) - investido[p]) / pote, 3) if pote else None
+            if verbo in ("Bet", "Raise"):
+                maior, agressor, calls = valor or 0, p, 0
+                investido[p] = maior
+            elif verbo == "Call":
+                investido[p] = maior
+                calls += 1
+            elif verbo == "Fold":
+                vivos.discard(p)
+        fim = None if pos1 is None else "levou" if len(vivos) == 1 else "pago"
+        mesmo = None if pos1 is None or agressor_antes is None else int(pos1 == agressor_antes)
+        saida.append((hid, rua, n, n_vivos, data, int(pos1 is not None), pos1, tam1, allin1, mesmo,
+                      None if pos1 is None else int(n_raises > 0), pos_raise, raise_x, n_raises if pos1 else None, fim,
+                      raise_risco, calls if pos1 else None, reraise_x, reraise_risco))
+        agressor_antes = agressor
+        if len(vivos) < 2:
+            break
+    return saida
 
 
 # mao em que o dono achou erro conferindo o print fica fora do estudo (mao errada e pior que mao ausente)
@@ -312,12 +395,14 @@ def reconstruir(con: sqlite3.Connection) -> int:
     for hid, pos, stack, net, cs, hero, ordem in con.execute(
             "SELECT hand_id, pos, stack, net, cartas, hero, ordem_flop FROM jogadores"):
         jog[hid][pos] = {"stack": stack, "net": net, "cartas": cs, "hero": hero, "ordem": ordem}
-    linhas = []
+    linhas, ruas = [], []
     for hid, n, ante, board, obs in con.execute(f"SELECT id, n_jogadores, ante_bb, board, obs FROM hands{SEM_ERRO}"):
         linhas += linhas_da_mao(hid, n, ante or 0, board or "", acoes[hid], jog[hid], bool(obs))
+        ruas += ruas_da_mao(hid, n, acoes[hid], jog[hid])
     with con:
         con.executescript(ESQUEMA)
         con.executemany(f"INSERT INTO decisoes VALUES ({','.join('?' * len(COLUNAS))})", linhas)
+        con.executemany(f"INSERT INTO ruas VALUES ({','.join('?' * COLUNAS_RUAS)})", ruas)
     return len(linhas)
 
 

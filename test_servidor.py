@@ -101,6 +101,32 @@ def test_hero_x_populacao(con):
         assert l["hero"] == next(s["v"] for s in servidor.painel(con, {"hero": [1]}) if s["nome"] == l["nome"] and s["secao"] == l["secao"])
 
 
+def test_spots_juntam_as_acoes_do_mesmo_spot():
+    def stat(nome, base, z, nh=40, bb=-5.0):
+        return {"secao": "Flop", "nome": nome, "base": base, "hero": [10, nh], "pop": [5, 100], "z": z, "bb": bb,
+                "lucro_hero": -1.0, "lucro_pop": 0.0}
+    contra = {"rua": ["flop"], "situacao": ["enfrenta aposta"]}
+    s = servidor.spots([stat("Fold contra aposta", contra, 1.0, bb=-90.0), stat("Call contra aposta", contra, -2.5, bb=-90.0),
+                        stat("Lead do 1º a agir", {"rua": ["flop"]}, 3.0, nh=12, bb=-200.0),
+                        stat("Check-raise", {"checou_antes": [1]}, 2.1, bb=4.0)])
+    assert [g["nome"] for g in s] == ["Contra aposta", "Check-raise", "Lead do 1º a agir"]  # n < 30 nao sobe
+    assert s[0]["bb"] == -90.0 and s[0]["z"] == -2.5 and [x["acao"] for x in s[0]["stats"]] == ["Fold", "Call"]
+    assert [g["sig"] for g in s] == [True, True, False]
+
+
+def test_derivadas_so_refazem_quando_a_impressao_muda(con, monkeypatch):
+    servidor.refazer_derivadas(con)
+    chamadas = []
+    monkeypatch.setattr(decisoes, "reconstruir", lambda c: chamadas.append(1))
+    monkeypatch.setattr(resultados, "reconstruir", lambda c: chamadas.append(2))
+    resultados.FORA.clear()
+    assert servidor.refazer_derivadas(con) is False and not chamadas
+    assert resultados.FORA  # o rodape da aba Jogadores volta do banco
+    with con:
+        con.execute("INSERT INTO aliases VALUES ('x', 'y', 0)")
+    assert servidor.refazer_derivadas(con) is True and chamadas == [1, 2]
+
+
 def test_jogadores_filtra_por_mesa_e_data_e_mostra_o_intervalo(con):
     todos = resultados.jogadores(con)
     assert sum(j["maos"] for j in todos) == con.execute("SELECT count(*) FROM resultados").fetchone()[0]
@@ -217,3 +243,63 @@ def test_principais_seguem_a_cadeia(con):
     con.execute("INSERT INTO aliases VALUES ('y', 'x', 1)")  # ciclo nao trava
     p = resultados.principais(con)
     assert p["a"] == "c" and p["b"] == "c" and p["x"] in ("x", "y")
+
+
+def test_linha_da_mao_conta_cada_resposta(con):
+    r = servidor.linha(con, {"linha": {}})
+    total = con.execute("SELECT count(DISTINCT hand_id) FROM ruas").fetchone()[0]
+    assert r["total"] == total == sum(r["inicio"].values())
+    flop = r["ruas"]["flop"]["contagens"]
+    assert sum(flop["acao"].values()) == total and sum(flop["pos"].values()) == flop["acao"].get("sim", 0)
+    # escolher uma resposta: o total e a contagem daquele botao; a lista de maos tem uma linha por mao
+    pos, n = next(iter(flop["pos"].items()))
+    lin = {"inicio": "flop", "ruas": {"flop": {"pos": [pos]}}}
+    assert servidor.linha(con, {"linha": lin})["total"] == n == servidor.maos(con, {"linha": lin})["total"]
+    assert servidor.linha(con, {"linha": {"inicio": "flop", "ruas": {"flop": {"acao": "check"}}}})["total"] == 0
+    # a tabela "o que a mesa fez depois da 1a bet" nao e filtrada pelo proprio desfecho nem pelas streets seguintes
+    sem = servidor.linha(con, {"linha": {"inicio": "flop"}})["ruas"]["flop"]["resposta"]
+    com = servidor.linha(con, {"linha": {"inicio": "flop", "ruas": {"flop": {"fim": ["1", "2+"]}, "turn": {"acao": "sim"}}}})
+    assert com["ruas"]["flop"]["resposta"] == sem
+    # com o tamanho do raise marcado, "nao aumentaram" e "todos deram check" continuam clicaveis (contagem > 0)
+    flop = servidor.linha(con, {"linha": {"ruas": {"flop": {"aumento": [1], "raise_x": ["2–3x", "3–4x", "até 2x", "4–5x", "5–7x", "7–10x", "10x+"]}}}})
+    c = flop["ruas"]["flop"]["contagens"]
+    assert c["aumento"] == servidor.linha(con, {"linha": {}})["ruas"]["flop"]["contagens"]["aumento"]
+    assert c["acao"] == servidor.linha(con, {"linha": {}})["ruas"]["flop"]["contagens"]["acao"]
+    # a tabela do raise: todos os tamanhos de raise quando nenhum foi escolhido, e o desfecho dela nao filtra ela mesma
+    r = servidor.linha(con, {"linha": {"ruas": {"flop": {"aumento": [1], "fim": ["1"]}}}})["ruas"]["flop"]
+    rr = r["resposta_raise"]
+    sem_fim = servidor.linha(con, {"linha": {"ruas": {"flop": {"aumento": [1]}}}})["ruas"]["flop"]
+    assert rr == sem_fim["resposta_raise"]
+    assert sum(d["n"] for d in rr.values()) == sem_fim["contagens"]["aumento"].get("1", 0)
+    assert all(d["todos foldam"] + d["1 call"] + d["2+ calls"] + d["aumentado"] == d["n"] for d in rr.values())
+    assert all(d["todos foldam"] + d["1 call"] + d["2+ calls"] + d["aumentado"] == d["n"] for d in r["resposta"].values())
+    # o re-raise: a tabela dele tem todas as maos com 2+ raises, e "sem re-raise" + "com re-raise" = as que levaram raise
+    rr = servidor.linha(con, {"linha": {"ruas": {"flop": {"aumento": [1]}}}})["ruas"]["flop"]
+    assert sum(v["n"] for v in rr["resposta_reraise"].values()) == rr["contagens"]["reraise"].get("1", 0)
+    assert sum(rr["contagens"]["reraise"].values()) == rr["contagens"]["aumento"].get("1", 0)
+    # o tamanho da 1a bet usa as faixas da MDA (H2N): "B50" e 0,41-0,60 nas duas abas
+    tudo = servidor.linha(con, {"linha": {}})["ruas"]["flop"]
+    assert set(tudo["contagens"]["tam"]) <= servidor.NOMES_H2N and set(tudo["resposta"]) <= servidor.NOMES_H2N
+    # por posicao e posicao x tamanho: as mesmas maos da tabela por tamanho, so agrupadas de outro jeito
+    t = servidor.linha(con, {"linha": {"inicio": "flop"}})["ruas"]["flop"]
+    n = lambda d: sum(v["n"] for v in d.values())
+    assert n(t["resposta"]) == n(t["resposta_pos"]) == n(t["resposta_pos_tam"])
+    for pos, d in t["resposta_pos"].items():
+        assert d["n"] == sum(v["n"] for k, v in t["resposta_pos_tam"].items() if k.split("|")[0] == pos)
+
+
+def test_conferir_txt_mostra_a_fila_e_grava_o_parecer(con):
+    import json
+
+    hid = con.execute("SELECT id FROM hands LIMIT 1").fetchone()[0]
+    (servidor.RAIZ / "fila_txt.json").write_text(json.dumps([{"hand_id": hid, "achados": ["raises $0"], "txt_antes": "x"}]),
+                                                 encoding="utf-8")
+    r = servidor.conferir(con, {"modo": "txt"})
+    assert r["modo"] == "txt" and r["mao"]["hand_id"] == hid and r["restantes"] == 1 and r["txt"]["achados"] == ["raises $0"]
+    assert r["txt"]["agora"] and r["txt"]["problemas_agora"] == []  # o .txt que o leitor de hoje escreveu fecha
+    with pytest.raises(ValueError, match="diga o que"):
+        servidor.parecer_txt(con, {"hand_id": hid, "ok": False})
+    depois = servidor.parecer_txt(con, {"hand_id": hid, "ok": True})
+    assert depois["mao"] is None and depois["restantes"] == 0
+    assert con.execute("SELECT ok FROM pareceres_txt WHERE hand_id = ?", (hid,)).fetchone() == (1,)
+    assert con.execute("SELECT count(*) FROM conferencias").fetchone() == (0,)  # nao entra na taxa de erro

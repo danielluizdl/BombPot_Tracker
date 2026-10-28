@@ -9,6 +9,7 @@ existindo para quando a separacao voltar.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -22,7 +23,9 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import auditar
+import checa_txt
 import decisoes
+import forca
 import resultados
 import tracker
 
@@ -50,19 +53,20 @@ FAIXAS_H2N = [(0.20, "0,00–0,20", "B10"), (0.40, "0,21–0,40", "B30"), (0.60,
               (None, "3,50+", "B400+")]
 CASE_H2N = _case(FAIXAS_H2N)
 NOMES_H2N = {nome for _, nome, _ in FAIXAS_H2N}
-EV_BLEFE = "CASE WHEN resposta = 'todos foldam' THEN 1.0 ELSE -tamanho END"
+# +1 pote se todos foldam, -o que ele arriscou se nao (na bet = tamanho; no raise, o call embutido entra no risco)
+EV_BLEFE = "CASE WHEN resposta = 'todos foldam' THEN 1.0 ELSE -risco END"
 
 # coluna -> tipo do filtro. 'lista' = IN (...), 'faixa' = min/max (ou lista de valores), 'faixas' = faixas
 # de tamanho acima, 'tags' = contem qualquer uma das tags (texturas nao exclusivas), 'datas' = periodo.
 FILTROS = {
-    "hero": "lista", "pos": "lista", "pos_rel": "lista", "ip": "lista", "rua": "lista",
+    "hero": "lista", "pos": "lista", "pos_rel": "lista", "ordem_rua": "lista", "ip": "lista", "rua": "lista",
     "situacao": "lista", "decisao_n": "lista", "checou_antes": "lista", "agressor_anterior": "lista",
     "rua_anterior_checada": "lista", "acao_anterior": "lista", "acao": "lista", "allin": "lista",
     "forca": "lista", "draw": "lista", "weak": "lista", "naipes_flop": "lista", "flop_pareado": "lista",
     "flop_conectado": "lista", "flop_alta": "lista", "board_pareado": "lista", "board_flush": "lista",
     "marcada": "lista", "n_jogadores": "faixa", "n_vivos": "faixa", "pote": "faixa", "spr": "faixa",
     "tamanho": "faixas", "tamanho_enfrentado": "faixas",
-    "resposta": "lista", "linha_flop": "lista", "linha_turn": "lista", "sd": "lista", "ganhou": "lista",
+    "resposta": "lista", "linha_flop": "lista", "linha_turn": "lista", "linha_atual": "lista", "sd": "lista", "ganhou": "lista",
     "texturas": "tags", "data": "datas", "tam_flop": "faixas", "tam_turn": "faixas", "enf_flop": "faixas", "enf_turn": "faixas",
 }
 DATA_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -223,6 +227,180 @@ def consultar(con: sqlite3.Connection, filtros: dict) -> dict:
     }
 
 
+# --- Linha da mao: o filtro do Estudo pela historia da mao, street por street (tabela `ruas`) ------------------------
+# linha = {"inicio": "flop"|"turn"|"river"|"nenhuma"|None, "recorte": {"n_jogadores": [..], "data": {min, max}},
+#          "ruas": {rua: {"acao": "sim"|"check", "pos": [..], "mesmo": [1|0], "tam": [faixas] | {min, max},
+#                         "aumento": [1|0], "raise_x": [faixas X] | {min, max}, "fim": ["levou"|"pago"]}}}
+# inicio = a 1a street com action: as anteriores todas em check. "nenhuma" = check ate o showdown.
+FAIXAS_X = [(2.0, "até 2x"), (3.0, "2–3x"), (4.0, "3–4x"), (5.0, "4–5x"), (7.0, "5–7x"), (10.0, "7–10x"), (None, "10x+")]
+CASE_X = "CASE WHEN {col} IS NULL THEN NULL " + " ".join(f"WHEN {{col}} <= {t} THEN '{n}'" for t, n in FAIXAS_X if t) \
+    + f" ELSE '{FAIXAS_X[-1][1]}' END"
+# o re-raise em vezes o 1o raise (131 re-raises: as faixas dividem a amostra em partes parecidas)
+FAIXAS_X2 = [(2.0, "até 2x"), (3.0, "2–3x"), (4.0, "3–4x"), (None, "4x+")]
+CASE_X2 = "CASE WHEN {col} IS NULL THEN NULL " + " ".join(f"WHEN {{col}} <= {t} THEN '{n}'" for t, n in FAIXAS_X2 if t) \
+    + f" ELSE '{FAIXAS_X2[-1][1]}' END"
+ORDEM_RUA = {"flop": 0, "turn": 1, "river": 2}
+PERGUNTAS = {  # pergunta -> (expressao sobre r., tipo)
+    "acao": ("CASE WHEN r.acao = 1 THEN 'sim' ELSE 'check' END", "lista"),
+    "pos": ("r.pos1", "lista"), "mesmo": ("r.mesmo_agressor", "lista"),
+    # as faixas da MDA (as do H2N): o mesmo "B50" nas duas abas
+    "tam": (CASE_H2N.format(col="r.tam1"), "faixas"), "aumento": ("r.aumento", "lista"),
+    "raise_x": (CASE_X.format(col="r.raise_x"), "faixas"),
+    "reraise": ("CASE WHEN r.n_raises >= 1 THEN r.n_raises >= 2 END", "lista"),  # so entre as que levaram raise
+    "reraise_x": (CASE_X2.format(col="r.reraise_x"), "faixas"),
+    # como a street terminou: todos foldaram, 1 call ou 2+ calls (a ultima bet/raise). 0 call com a mao seguindo = all-in que
+    # cobre quem ja estava all-in (ID_1308196785894068224): conta como 1 call, o all-in menor ja esta dentro
+    "fim": ("CASE WHEN r.fim = 'levou' THEN 'levou' WHEN r.fim = 'pago' AND r.n_calls >= 2 THEN '2+' "
+            "WHEN r.fim = 'pago' THEN '1' END", "lista"),
+}
+COL_FAIXA_LIVRE = {"tam": "r.tam1", "raise_x": "r.raise_x", "reraise_x": "r.reraise_x"}
+
+
+def _cond_rua(passo: dict, sem: str | tuple | None = None) -> tuple[list[str], list]:
+    """As condicoes de uma street sobre o alias r (menos a pergunta `sem`, para as contagens de cada botao)."""
+    partes, params = [], []
+    fora = set(sem) if isinstance(sem, tuple) else {sem}
+    passo = {q: v for q, v in passo.items() if q not in fora}
+    for q, (expr, tipo) in PERGUNTAS.items():
+        v = passo.get(q)
+        if v in (None, [], {}):
+            continue
+        if q == "acao":
+            partes.append("r.acao = ?")
+            params.append(1 if v == "sim" else 0)
+        elif isinstance(v, list):
+            partes.append(f"{expr} IN ({','.join('?' * len(v))})")
+            params += v
+        elif isinstance(v, dict) and tipo == "faixas":  # a faixa livre da barrinha
+            for lado, op in (("min", ">="), ("max", "<=")):
+                if v.get(lado) not in (None, ""):
+                    partes.append(f"{COL_FAIXA_LIVRE[q]} {op} ?")
+                    params.append(float(v[lado]))
+    if any(passo.get(q) not in (None, [], {}) for q in ("pos", "mesmo", "tam", "aumento", "raise_x", "reraise", "reraise_x", "fim")) \
+            and passo.get("acao") != "check":
+        partes.append("r.acao = 1")  # perguntar quem apostou ja diz que houve bet
+    return partes, params
+
+
+def maos_da_linha(linha: dict, sem: tuple | None = None) -> tuple[str, list]:
+    """SELECT dos hand_id que seguem a linha (menos a pergunta `sem` = (rua, pergunta))."""
+    rec = linha.get("recorte") or {}
+    base, params = ["1 = 1"], []
+    if isinstance(rec.get("n_jogadores"), list) and rec["n_jogadores"]:
+        base.append(f"n_jogadores IN ({','.join('?' * len(rec['n_jogadores']))})")
+        params += [int(x) for x in rec["n_jogadores"]]
+    for lado, op in (("min", ">="), ("max", "<=")):
+        if DATA_RE.match(str((rec.get("data") or {}).get(lado) or "")):
+            base.append(f"data {op} ?")
+            params.append(rec["data"][lado])
+    conds = []
+    def existe(partes: list[str]) -> str:
+        return "EXISTS (SELECT 1 FROM ruas r WHERE r.hand_id = h.hand_id AND r.rua = ?" + "".join(f" AND {c}" for c in partes) + ")"
+
+    inicio = linha.get("inicio")
+    if inicio == "nenhuma":
+        conds.append("NOT EXISTS (SELECT 1 FROM ruas r WHERE r.hand_id = h.hand_id AND r.acao = 1)")
+        conds.append(existe([]))
+        params.append("river")
+    elif inicio in ORDEM_RUA:
+        for rua, i in ORDEM_RUA.items():
+            if i <= ORDEM_RUA[inicio]:
+                conds.append(existe(["r.acao = ?"]))
+                params += [rua, int(i == ORDEM_RUA[inicio])]
+    for rua, passo in (linha.get("ruas") or {}).items():
+        if rua not in ORDEM_RUA or not isinstance(passo, dict):
+            continue
+        partes, ps = _cond_rua(passo, sem[1] if sem and sem[0] == rua else None)
+        if partes:
+            conds.append(existe(partes))
+            params += [rua] + ps
+    return (f"SELECT h.hand_id FROM (SELECT DISTINCT hand_id FROM ruas WHERE {' AND '.join(base)}) h"
+            + (" WHERE " + " AND ".join(conds) if conds else "")), params
+
+
+def linha(con: sqlite3.Connection, corpo: dict) -> dict:
+    """O Estudo: quantas maos seguem a linha e, em cada pergunta de cada street, quantas maos tem cada resposta
+    (com as outras respostas valendo). No tamanho da 1a bet, tambem o que a mesa fez depois (todos foldam / pago /
+    raise) e o EV do blefe."""
+    lin = corpo.get("linha") or {}
+    sql, p = maos_da_linha(lin)
+    total = con.execute(f"SELECT count(*) FROM ({sql})", p).fetchone()[0]
+    # a pergunta 1 conta so com o recorte: trocar a 1a street limpa as perguntas das streets (nunca fica com 0)
+    sql_i, p_i = maos_da_linha({"recorte": lin.get("recorte")})
+    inicio = {k: n for k, n in con.execute(
+        f"SELECT coalesce((SELECT r.rua FROM ruas r WHERE r.hand_id = m.hand_id AND r.acao = 1 "
+        "ORDER BY CASE r.rua WHEN 'flop' THEN 0 WHEN 'turn' THEN 1 ELSE 2 END LIMIT 1), "
+        "CASE WHEN EXISTS (SELECT 1 FROM ruas r WHERE r.hand_id = m.hand_id AND r.rua = 'river') THEN 'nenhuma' END), "
+        f"count(*) FROM ({sql_i}) m GROUP BY 1", p_i) if k}
+    ruas: dict = {}
+    for rua in ORDEM_RUA:
+        contagens: dict = {}
+        for q, (expr, _) in PERGUNTAS.items():
+            # "teve action?" e "aumentaram?" contam sem as perguntas que dependem deles (marcar check limpa as outras;
+            # marcar "nao aumentaram" limpa o tamanho do raise): sem isso o botao para voltar ficava com 0 e desligado
+            sem = tuple(PERGUNTAS) if q == "acao" else ("aumento", "raise_x", "reraise", "reraise_x") if q == "aumento" \
+                else ("reraise", "reraise_x") if q == "reraise" else q
+            s, ps = maos_da_linha(lin, (rua, sem))
+            contagens[q] = {str(k): n for k, n in con.execute(
+                f"SELECT {expr}, count(*) FROM ruas r WHERE r.rua = ? AND r.hand_id IN ({s}) GROUP BY 1", [rua] + ps)
+                if k is not None}
+        # o desfecho nao pode filtrar o desfecho: so a linha ate esta street, sem as perguntas 4 e 5 dela. Cada tabela
+        # mostra todos os valores dela (por tamanho: todos os tamanhos; por posicao: todas as posicoes) e as outras
+        # respostas valem.
+        ate = {**lin, "ruas": {r: q for r, q in (lin.get("ruas") or {}).items() if ORDEM_RUA.get(r, 9) <= ORDEM_RUA[rua]}}
+        desfecho = ("aumento", "raise_x", "reraise", "reraise_x", "fim")
+        tam, pos = PERGUNTAS["tam"][0], "r.pos1"
+        resposta = _resposta(con, rua, [tam], maos_da_linha(ate, (rua, ("tam",) + desfecho)), RESP_BET)
+        resposta_pos = _resposta(con, rua, [pos], maos_da_linha(ate, (rua, ("pos",) + desfecho)), RESP_BET)
+        resposta_pos_tam = _resposta(con, rua, [pos, tam], maos_da_linha(ate, (rua, ("pos", "tam") + desfecho)), RESP_BET)
+        # o mesmo para o 1o raise, por tamanho em vezes a 1a bet: todos foldaram para quem deu o raise, pagaram (sem
+        # outro raise) ou re-raise. Vale o tamanho da bet e o do raise escolhidos; so o desfecho (pergunta 5) sai.
+        resposta_raise = _resposta(con, rua, [PERGUNTAS["raise_x"][0]],
+                                   maos_da_linha(ate, (rua, ("aumento", "reraise", "reraise_x", "fim"))), RESP_RAISE)
+        # e para o re-raise, por tamanho em vezes o raise: todos foldaram para quem deu o re-raise, pagaram ou 4-bet
+        resposta_reraise = _resposta(con, rua, [PERGUNTAS["reraise_x"][0]],
+                                     maos_da_linha(ate, (rua, ("aumento", "reraise", "fim"))), RESP_RERAISE)
+        ruas[rua] = {"contagens": contagens, "resposta": resposta, "resposta_pos": resposta_pos,
+                     "resposta_pos_tam": resposta_pos_tam, "resposta_raise": resposta_raise, "resposta_reraise": resposta_reraise}
+    return {"total": total, "inicio": inicio, "ruas": ruas,
+            "faixas_x": [n for _, n in FAIXAS_X], "faixas_x2": [n for _, n in FAIXAS_X2]}
+
+
+# O que a mesa fez depois da agressao: todos foldaram, 1 call, 2+ calls, mais uma agressao, o EV do blefe (+1 pote se todos
+# foldam, -o risco se nao) e a soma do risco (o "precisa foldar" sai da media). RESP_BET = a 1a bet; RESP_RAISE = o 1o raise.
+RESP_BET = ("r.acao = 1", "r.aumento = 0 AND r.fim = 'levou'", "r.aumento = 0 AND r.fim = 'pago'", "r.aumento = 1", "r.tam1")
+RESP_RAISE = ("r.aumento = 1", "r.n_raises = 1 AND r.fim = 'levou'", "r.n_raises = 1 AND r.fim = 'pago'", "r.n_raises >= 2",
+              "coalesce(r.raise_risco, 0)")
+RESP_RERAISE = ("r.n_raises >= 2", "r.n_raises = 2 AND r.fim = 'levou'", "r.n_raises = 2 AND r.fim = 'pago'", "r.n_raises >= 3",
+                "coalesce(r.reraise_risco, 0)")
+
+
+def _resposta(con: sqlite3.Connection, rua: str, grupos: list[str], maos: tuple[str, list], tipo: tuple) -> dict:
+    """{chave: contagens} agrupando por `grupos` (a chave junta os valores com "|": "BTN|0,46–0,66")."""
+    onde, levou, pago, mais, risco = tipo
+    s, ps = maos
+    out = {}
+    for *chave, n, tf, c1, c2, au, ev, tm in con.execute(
+            f"SELECT {', '.join(grupos)}, count(*), sum({levou}), sum({pago} AND r.n_calls < 2), sum({pago} AND r.n_calls >= 2), "
+            f"sum({mais}), sum(CASE WHEN {levou} THEN 1.0 ELSE -{risco} END), sum({risco}) "
+            f"FROM ruas r WHERE r.rua = ? AND {onde} AND r.hand_id IN ({s}) "
+            f"GROUP BY {', '.join(str(i + 1) for i in range(len(grupos)))}", [rua] + ps):
+        if None not in chave:
+            out["|".join(map(str, chave))] = {"n": n, "todos foldam": tf, "1 call": c1, "2+ calls": c2, "aumentado": au,
+                                              "ev": ev, "tam": tm}
+    return out
+
+
+def foco_da_linha(lin: dict) -> str | None:
+    """A street em estudo: a ultima com action escolhida (ou o inicio). As maos mostram a 1a bet dela."""
+    foco = lin.get("inicio") if lin.get("inicio") in ORDEM_RUA else None
+    for rua, passo in (lin.get("ruas") or {}).items():
+        if rua in ORDEM_RUA and isinstance(passo, dict) and _cond_rua(passo)[0] and passo.get("acao") != "check":
+            if foco is None or ORDEM_RUA[rua] > ORDEM_RUA[foco]:
+                foco = rua
+    return foco
+
+
 # --- Ver mãos: a lista do filtro (uma decisão por linha, como a lista de mãos do H2N) e o replayer -------------------
 MAX_TODAS = 1000  # "ver todas" para aqui: mais que isso o filtro está largo demais para ler mão a mão
 
@@ -255,8 +433,14 @@ def maos(con: sqlite3.Connection, corpo: dict) -> dict:
     """As mãos do filtro do Estudo (corpo.filtros) ou de um nó da MDA (corpo.mda), da mais nova para a mais velha:
     uma linha por decisão, com a linha da mão por rua (linhas_de_mao) e quem decidiu. offset/limite paginam;
     limite 0 = todas (até MAX_TODAS)."""
-    w, p = where_mda({**corpo["mda"], "filtros": corpo.get("filtros")}) if isinstance(corpo.get("mda"), dict) \
-        else where(corpo.get("filtros") or {})
+    if isinstance(corpo.get("linha"), dict):  # Estudo: uma linha por mao, na 1a bet da street em estudo
+        sql, p = maos_da_linha(corpo["linha"])
+        foco = foco_da_linha(corpo["linha"])
+        w = f" WHERE hand_id IN ({sql}) AND " + ("rua = ? AND acao = 'Bet'" if foco else "rua = ? AND decisao_n = 1 AND ordem_rua = 1")
+        p = p + [foco or "flop"]
+    else:
+        w, p = where_mda({**corpo["mda"], "filtros": corpo.get("filtros")}) if isinstance(corpo.get("mda"), dict) \
+            else where(corpo.get("filtros") or {})
     total = con.execute(f"SELECT count(*) FROM decisoes{w}", p).fetchone()[0]
     limite = int(corpo.get("limite") or 0) or MAX_TODAS
     offset = max(int(corpo.get("offset") or 0), 0)
@@ -417,9 +601,9 @@ def mesa(con, filtros: dict) -> dict:
 GRANDE = ["0,67–0,85", "0,86–1,00", "1,01–1,20", "1,21–1,50", "1,51–2,00", "2,00+"]
 # Painel de tendencias (o perfil do H2N): (secao, nome, base, numerador). base e numerador sao filtros do site.
 PAINEL = [
-    ("Flop", "Aposta quando checaram até ele", {"rua": ["flop"], "situacao": ["livre"], "decisao_n": [1]}, {"acao": ["Bet"]}),
-    ("Flop", "Lead do 1º a agir", {"rua": ["flop"], "situacao": ["livre"], "pos_rel": ["1º a agir"]}, {"acao": ["Bet"]}),
-    ("Flop", "Aposta do último (todos checaram)", {"rua": ["flop"], "situacao": ["livre"], "ip": [1]}, {"acao": ["Bet"]}),
+    ("Flop", "Aposta quando ninguém apostou antes", {"rua": ["flop"], "situacao": ["livre"], "decisao_n": [1]}, {"acao": ["Bet"]}),
+    ("Flop", "Aposta do 1º a agir (lead)", {"rua": ["flop"], "situacao": ["livre"], "ordem_rua": [1]}, {"acao": ["Bet"]}),
+    ("Flop", "Aposta do último a agir (todos checaram)", {"rua": ["flop"], "situacao": ["livre"], "ip": [1]}, {"acao": ["Bet"]}),
     ("Flop", "Fold contra aposta", {"rua": ["flop"], "situacao": ["enfrenta aposta"]}, {"acao": ["Fold"]}),
     ("Flop", "Call contra aposta", {"rua": ["flop"], "situacao": ["enfrenta aposta"]}, {"acao": ["Call"]}),
     ("Flop", "Raise contra aposta", {"rua": ["flop"], "situacao": ["enfrenta aposta"]}, {"acao": ["Raise"]}),
@@ -431,7 +615,7 @@ PAINEL = [
     ("Turn", "Fold contra aposta", {"rua": ["turn"], "situacao": ["enfrenta aposta"]}, {"acao": ["Fold"]}),
     ("Turn", "Raise contra aposta", {"rua": ["turn"], "situacao": ["enfrenta aposta"]}, {"acao": ["Raise"]}),
     ("Turn", "Check-raise", {"rua": ["turn"], "situacao": ["enfrenta aposta"], "checou_antes": [1]}, {"acao": ["Raise"]}),
-    ("River", "Aposta quando checaram até ele", {"rua": ["river"], "situacao": ["livre"], "decisao_n": [1]}, {"acao": ["Bet"]}),
+    ("River", "Aposta quando ninguém apostou antes", {"rua": ["river"], "situacao": ["livre"], "decisao_n": [1]}, {"acao": ["Bet"]}),
     ("River", "Bet-bet-bet (B, B, bet)", {"rua": ["river"], "situacao": ["livre"], "linha_flop": ["B"], "linha_turn": ["B"]}, {"acao": ["Bet"]}),
     ("River", "Bet-check-bet (B, X, bet)", {"rua": ["river"], "situacao": ["livre"], "linha_flop": ["B"], "linha_turn": ["X"]}, {"acao": ["Bet"]}),
     ("River", "Fold contra aposta", {"rua": ["river"], "situacao": ["enfrenta aposta"]}, {"acao": ["Fold"]}),
@@ -458,7 +642,7 @@ def painel(con: sqlite3.Connection, filtros: dict) -> list[dict]:
 
 # --- MDA: a arvore de acoes por rua (o perfil do H2N), com bet sizes em cada no --------------------------------
 # Filtros que a propria arvore controla: nao valem como filtro de fora na aba MDA.
-DA_ARVORE = {"rua", "situacao", "ip", "linha_flop", "linha_turn", "tam_flop", "tam_turn", "enf_flop", "enf_turn",
+DA_ARVORE = {"rua", "situacao", "ip", "linha_flop", "linha_turn", "linha_atual", "tam_flop", "tam_turn", "enf_flop", "enf_turn",
              "acao", "tamanho", "tamanho_enfrentado", "decisao_n", "checou_antes", "resposta", "_agrupar"}
 SITU = "CASE WHEN situacao = 'livre' THEN 'livre' ELSE 'enfrenta' END"
 
@@ -475,8 +659,10 @@ def _caminho(caminho: dict, ate: str) -> dict:
         if not isinstance(passo, dict) or not passo.get("linha"):
             continue
         filtros[f"linha_{rua}"] = [str(passo["linha"])]
-        if passo.get("faixa"):
-            filtros[("enf_" if passo.get("lado") == "pagou" else "tam_") + rua] = [str(passo["faixa"])]
+        faixas = passo.get("faixa")  # uma faixa ou varias (B10 + B30 = o conjunto das duas)
+        faixas = [str(f) for f in faixas] if isinstance(faixas, list) else [str(faixas)] if faixas else []
+        if faixas:
+            filtros[("enf_" if passo.get("lado") == "pagou" else "tam_") + rua] = faixas
     return filtros
 
 
@@ -510,7 +696,7 @@ def mda(con: sqlite3.Connection, corpo: dict) -> dict:
                     "prox_acao = 'Fold'", "prox_acao = 'Call'", "prox_acao = 'Raise'", "resposta IS NOT NULL")) + ", "
                 # EV do blefe e bet media como na Resposta ao sizing do Estudo: so as bets que a mesa respondeu
                 f"sum(CASE WHEN resposta IS NOT NULL THEN {EV_BLEFE} ELSE 0 END), "
-                "sum(CASE WHEN resposta IS NOT NULL THEN tamanho ELSE 0 END) "
+                "sum(CASE WHEN resposta IS NOT NULL THEN risco ELSE 0 END) "
                 f"FROM decisoes{w}{_e(w)}acao IN ('Bet', 'Raise') AND tamanho IS NOT NULL GROUP BY 1, 2, 3, 4, 5, 6, 7", p):
             chave = faixa + ("|AI" if allin else "")
             no(lf, lt, atual, situ)["tamanhos"].setdefault(acao, {})[chave] = {
@@ -518,7 +704,7 @@ def mda(con: sqlite3.Connection, corpo: dict) -> dict:
                 "depois": {"Fold": pf, "Call": pc, "Raise": pr}, "respondidas": resp, "ev": ev, "tam": tam}
         for lf, lt, atual, situ, faixa, acao, n, precisa in con.execute(
                 f"SELECT linha_flop, linha_turn, linha_atual, {SITU}, {CASE_H2N.format(col='tamanho_enfrentado')}, acao, "
-                f"count(*), sum(tamanho_enfrentado / (1 + tamanho_enfrentado)) FROM decisoes{w}{_e(w)}situacao != 'livre' "
+                f"count(*), sum(risco_enfrentado / (1 + risco_enfrentado)) FROM decisoes{w}{_e(w)}situacao != 'livre' "
                 "AND tamanho_enfrentado IS NOT NULL GROUP BY 1, 2, 3, 4, 5, 6", p):
             d = no(lf, lt, atual, situ)["enfrentado"].setdefault(faixa, {"precisa": 0.0})
             d[acao] = n
@@ -558,6 +744,68 @@ def leaks(con: sqlite3.Connection, filtros: dict) -> list[dict]:
                       "z": round((ph - pp) / erro, 2) if erro else 0.0, "bb": bb,
                       "lucro_hero": round(sh / lh, 2) if lh else None, "lucro_pop": round(sp / lp, 2) if lp else None})
     return sorted(saida, key=lambda s: (s["bb"] is None, s["bb"] if s["bb"] is not None else 0))
+
+
+AMOSTRA_MINIMA = 30
+
+
+def spots(lista: list[dict]) -> list[dict]:
+    """As stats do leaks() juntas por spot (mesma base): Fold/Call/Raise contra a mesma aposta viram uma linha, com o
+    BB no total uma vez so (ele e do spot, nao da acao). Primeiro os spots com |z| >= 2 e >= 30 decisoes suas, do que
+    mais custa para o que mais rende; depois o resto, na mesma ordem."""
+    grupos: dict[str, dict] = {}
+    for s in lista:
+        g = grupos.setdefault(json.dumps([s["secao"], s["base"]], sort_keys=True), {
+            "secao": s["secao"], "base": s["base"], "bb": s["bb"], "lucro_hero": s["lucro_hero"],
+            "lucro_pop": s["lucro_pop"], "stats": []})
+        g["stats"].append({k: s[k] for k in ("nome", "hero", "pop", "z")})
+    for g in grupos.values():
+        nomes = [s["nome"] for s in g["stats"]]
+        resto = {n.split(" ", 1)[1] for n in nomes if " " in n}
+        if len(nomes) > 1 and len(resto) == 1:  # "Fold contra aposta", "Call contra aposta" -> "Contra aposta"
+            g["nome"] = resto.pop().capitalize()
+            for s in g["stats"]:
+                s["acao"] = s["nome"].split(" ", 1)[0]
+        else:
+            g["nome"] = " / ".join(nomes)
+        g["z"] = max((s["z"] for s in g["stats"]), key=abs)
+        g["sig"] = abs(g["z"]) >= 2 and g["stats"][0]["hero"][1] >= AMOSTRA_MINIMA
+    return sorted(grupos.values(), key=lambda g: (not g["sig"], g["bb"] is None, g["bb"] or 0))
+
+
+def impressao(con: sqlite3.Connection) -> str:
+    """O que as tabelas derivadas leem (leitura, conferencias, aliases) e o codigo que as monta, num hash (~0,2 s)."""
+    h = hashlib.sha256()
+    for mod in (decisoes, resultados, forca):
+        h.update(Path(str(mod.__file__)).read_bytes())
+    for tab in ("hands", "acoes", "jogadores", "conferencias", "aliases"):
+        for linha in con.execute(f"SELECT * FROM {tab} ORDER BY rowid"):
+            h.update(repr(linha).encode())
+    return h.hexdigest()
+
+
+def refazer_derivadas(con: sqlite3.Connection) -> bool:
+    """Refaz `decisoes` e `resultados` so se a impressao mudou desde a ultima vez (a primeira abertura do site levava
+    ~8 s mesmo sem mao nova). Devolve se refez."""
+    imp = impressao(con)
+    con.execute("CREATE TABLE IF NOT EXISTS derivadas (impressao TEXT, fora TEXT)")
+    salvo = con.execute("SELECT impressao, fora FROM derivadas").fetchone()
+    if salvo and salvo[0] == imp:
+        resultados.FORA.clear()
+        resultados.FORA.update(json.loads(salvo[1]))
+        return False
+    decisoes.reconstruir(con)
+    resultados.reconstruir(con)
+    gravar_impressao(con, imp)
+    return True
+
+
+def gravar_impressao(con: sqlite3.Connection, imp: str | None = None) -> None:
+    """Depois de refazer as derivadas por conta propria (marcar, juntar): a proxima abertura nao refaz de novo."""
+    with con:
+        con.execute("CREATE TABLE IF NOT EXISTS derivadas (impressao TEXT, fora TEXT)")
+        con.execute("DELETE FROM derivadas")
+        con.execute("INSERT INTO derivadas VALUES (?, ?)", (imp or impressao(con), json.dumps(resultados.FORA)))
 
 
 # --- Conferir: o print ao lado da mao lida; so as maos sorteadas entram na taxa de erro ---------------------------
@@ -646,10 +894,54 @@ def proximo_nick(con: sqlite3.Connection) -> tuple[dict | None, int]:
     return par, len(sugestoes)
 
 
+def fila_txt() -> list[dict]:
+    """As maos cuja transcricao para o .txt o Claude achou errada, com o que achou e o .txt de antes da correcao
+    ([{hand_id, achados, txt_antes}]). Fica fora do git (tem nicks de terceiros)."""
+    arq = RAIZ / "fila_txt.json"
+    try:
+        return json.loads(arq.read_text(encoding="utf-8")) if arq.is_file() else []
+    except ValueError:
+        return []
+
+
+def conferir_txt(con: sqlite3.Connection, s: dict) -> dict:
+    """A proxima mao da fila do .txt sem parecer: a leitura (dados_da_mao), o que estava errado, o .txt de antes e o
+    de agora (hh/maos, o que o leitor aceito escreve) com o que a checagem independente (checa_txt) acha nele."""
+    fila = fila_txt()
+    feitos = {h for (h,) in con.execute("SELECT hand_id FROM pareceres_txt")}
+    pendentes = [f for f in fila if f["hand_id"] not in feitos]
+    base = {"modo": "txt", "saude": s, "campos": CAMPOS_ERRO, "restantes": len(pendentes), "total": len(fila)}
+    if not pendentes:
+        return {**base, "mao": None}
+    f = pendentes[0]
+    arq = RAIZ / "hh" / "maos" / f"{f['hand_id']}.txt"
+    agora = arq.read_text(encoding="utf-8") if arq.is_file() else None
+    return {**base, "mao": dados_da_mao(con, f["hand_id"]),
+            "txt": {"achados": f.get("achados", []), "antes": f.get("txt_antes"), "agora": agora,
+                    "problemas_agora": checa_txt.problemas(agora) if agora else ["a mao nao tem .txt em hh/maos"]}}
+
+
+def parecer_txt(con: sqlite3.Connection, corpo: dict) -> dict:
+    """Grava o parecer do dono sobre o .txt de uma mao da fila e devolve a proxima."""
+    hid = str(corpo.get("hand_id", ""))
+    if hid not in {f["hand_id"] for f in fila_txt()}:
+        raise ValueError("mao fora da fila do .txt")
+    ok = bool(corpo.get("ok"))
+    obs = str(corpo.get("obs") or "")[:1000] or None
+    if not ok and not obs:
+        raise ValueError("diga o que está errado no .txt")
+    with con:
+        con.execute("INSERT OR REPLACE INTO pareceres_txt VALUES (?,?,?,?)", (hid, int(ok), obs, tracker.agora()))
+    copiar_conferencias(con)
+    return conferir_txt(con, Handler.saude_cache or saude(con))
+
+
 def conferir(con: sqlite3.Connection, corpo: dict) -> dict:
     """A proxima mao a conferir: sorteada entre as nao conferidas, ou a primeira da fila de suspeitas; no modo
-    nicks, o proximo par de nicks que podem ser o mesmo jogador."""
+    nicks, o proximo par de nicks que podem ser o mesmo jogador; no modo txt, a fila da transcricao."""
     s = Handler.saude_cache or saude(con)
+    if corpo.get("modo") == "txt":
+        return conferir_txt(con, s)
     if corpo.get("modo") == "nicks":
         par, restantes = proximo_nick(con)
         return {"modo": "nicks", "nick": par, "restantes": restantes, "mao": None, "saude": s, "campos": CAMPOS_ERRO}
@@ -679,8 +971,7 @@ def marcar(con: sqlite3.Connection, corpo: dict) -> dict:
                     "VALUES (?,?,?,?,?,?,?,?)", (hid, int(ok), campo, str(corpo.get("obs") or "")[:500] or None,
                                                  json.dumps(tracker.assinatura(con, hid)), versao[0], tracker.agora(), modo))
     if not ok:
-        decisoes.reconstruir(con)
-        resultados.reconstruir(con)
+        refazer_derivadas(con)
     copiar_conferencias(con)
     Handler.saude_cache = saude(con)
     return conferir(con, {"modo": modo})
@@ -691,7 +982,7 @@ def copiar_conferencias(con: sqlite3.Connection) -> Path:
     pasta BOMBPOT_COPIA (a do drive) ou, sem ela, ao lado do banco (fora do git)."""
     pasta = Path(os.environ.get("BOMBPOT_COPIA") or RAIZ)
     dados = {t: [dict(zip([c[0] for c in cur.description], r)) for r in cur]
-             for t in ("conferencias", "aliases", "nicks_conferidos", "liberadas") for cur in [con.execute(f"SELECT * FROM {t}")]}
+             for t in ("conferencias", "aliases", "nicks_conferidos", "liberadas", "pareceres_txt") for cur in [con.execute(f"SELECT * FROM {t}")]}
     arq = pasta / "conferencias_bombpot.json"
     arq.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
     return arq
@@ -712,7 +1003,8 @@ def juntar(con: sqlite3.Connection, corpo: dict) -> dict:
         raise ValueError("dois nicks diferentes")
     with con:
         con.execute("INSERT OR REPLACE INTO aliases VALUES (?,?,?)", (a, b, int(bool(corpo.get("junta")))))
-    resultados.reconstruir(con)
+    resultados.reconstruir(con)  # aliases nao mudam `decisoes`
+    gravar_impressao(con)
     copiar_conferencias(con)
     if corpo.get("modo") == "nicks":  # veio da aba Conferir: devolve o proximo par
         return conferir(con, {"modo": "nicks"})
@@ -720,9 +1012,13 @@ def juntar(con: sqlite3.Connection, corpo: dict) -> dict:
 
 
 def exportar(con: sqlite3.Connection, filtros: dict, raiz: Path = RAIZ) -> tuple[str, int]:
-    """Os .txt (PokerStars, bomb pot no formato do GG) das maos do filtro, num texto so, para o H2N."""
-    w, p = where(filtros)
-    ids = [i for (i,) in con.execute(f"SELECT DISTINCT hand_id FROM decisoes{w} ORDER BY hand_id", p)]
+    """Os .txt (PokerStars, bomb pot no formato do GG) das maos do filtro (ou da linha do Estudo), para o H2N."""
+    if isinstance(filtros.get("linha"), dict):
+        sql, p = maos_da_linha(filtros["linha"])
+        ids = [i for (i,) in con.execute(f"SELECT hand_id FROM ({sql}) ORDER BY hand_id", p)]
+    else:
+        w, p = where(filtros)
+        ids = [i for (i,) in con.execute(f"SELECT DISTINCT hand_id FROM decisoes{w} ORDER BY hand_id", p)]
     textos = [(raiz / "hh" / "maos" / f"{i}.txt") for i in ids]
     partes = [arq.read_text(encoding="utf-8").strip() for arq in textos if arq.is_file()]
     return "\n\n\n".join(partes) + "\n", len(partes)
@@ -758,8 +1054,7 @@ class Handler(SimpleHTTPRequestHandler):
         conferencia pelo terminal). PRAGMA data_version muda a cada commit de outra conexao, nao a cada mao nova."""
         v = self.con.execute("PRAGMA data_version").fetchone()[0]
         if v != Handler.versao_vista:
-            decisoes.reconstruir(self.con)
-            resultados.reconstruir(self.con)
+            refazer_derivadas(self.con)
             Handler.saude_cache = saude(self.con)
             Handler.versao_vista = v
 
@@ -820,9 +1115,10 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(corpo)
             return None
-        rotas = {"/api/consulta": consultar, "/api/painel": painel, "/api/mda": mda, "/api/leaks": leaks,
+        rotas = {"/api/consulta": consultar, "/api/linha": linha, "/api/painel": painel, "/api/mda": mda,
+                 "/api/leaks": lambda con, filtros: spots(leaks(con, filtros)),
                  "/api/maos": maos, "/api/mao": mao,
-                 "/api/jogadores": jogadores, "/api/juntar": juntar, "/api/conferir": conferir, "/api/marcar": marcar,
+                 "/api/jogadores": jogadores, "/api/juntar": juntar, "/api/conferir": conferir, "/api/marcar": marcar, "/api/parecer_txt": parecer_txt,
                  "/api/serie": lambda con, corpo: resultados.serie(con, str(corpo.get("nome", "")),
                                                                    filtros=corpo.get("filtros"))}
         if self.path not in rotas:
