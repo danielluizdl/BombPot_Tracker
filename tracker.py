@@ -22,6 +22,7 @@ template do numero das cartas; o refazer nunca mexe no banco: grava um banco nov
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import json
@@ -49,8 +50,10 @@ sys.path.insert(0, str(REPLAYER))
 from wptparse import dicionarios, jogadores as jogadores_wpt, lotes  # noqa: E402
 from wptparse.armario import VERSAO  # noqa: E402
 from wptparse.cards import read_rank  # noqa: E402
+from wptparse import hand as wpt_hand  # noqa: E402
 from wptparse.hand import build  # noqa: E402
 from wptparse.layout import PANEL_BG  # noqa: E402
+from wptparse.parse import Action, Result  # noqa: E402
 from wptparse.words import canon  # noqa: E402
 
 RUAS = ("flop", "turn", "river")
@@ -99,7 +102,9 @@ CREATE TABLE IF NOT EXISTS nicks_conferidos (nick TEXT PRIMARY KEY, fonte TEXT, 
 -- print recusado so pela conferencia do Replayer, com a leitura conferida campo a campo no print: issues = as
 -- queixas daquele momento (uma por linha); leitor que reclamar de outra coisa recusa de novo
 CREATE TABLE IF NOT EXISTS liberadas (sha256 TEXT PRIMARY KEY, png TEXT NOT NULL, issues TEXT NOT NULL,
-  motivo TEXT NOT NULL, quem TEXT NOT NULL, quando TEXT NOT NULL);
+  motivo TEXT NOT NULL, quem TEXT NOT NULL, quando TEXT NOT NULL,
+  deduzidas TEXT);  -- JSON {"acoes": [[rua, pos, verbo]], "resultados": [[rua, pos, saldo]]}: linha que o print cortou e
+                    -- o pote total da mesa prova (ver deduzindo); NULL = so liberada
 -- parecer do dono sobre a transcricao da mao para o .txt (aba Conferir, modo .txt): a leitura certa e o arquivo errado
 -- sao coisas diferentes, entao isto nao entra na taxa de erro nem tira a mao do estudo
 CREATE TABLE IF NOT EXISTS pareceres_txt (hand_id TEXT PRIMARY KEY, ok INTEGER NOT NULL, obs TEXT, quando TEXT NOT NULL);
@@ -107,7 +112,8 @@ CREATE TABLE IF NOT EXISTS pareceres_txt (hand_id TEXT PRIMARY KEY, ok INTEGER N
 # colunas que bancos antigos nao tem (o CREATE TABLE IF NOT EXISTS nao as acrescenta)
 COLUNAS_NOVAS = {"hands": ("obs TEXT", "versao_leitor TEXT", "sha256 TEXT", "mtime TEXT", "pior_rank REAL", "notas TEXT"),
                  "jogadores": ("nome TEXT",),
-                 "conferencias": ("modo TEXT NOT NULL DEFAULT 'sorteio'",)}
+                 "conferencias": ("modo TEXT NOT NULL DEFAULT 'sorteio'",),
+                 "liberadas": ("deduzidas TEXT",)}
 COLS_HANDS = ("id", "png", "n_jogadores", "ante_bb", "board", "unidade", "lido_em", "obs",
               "versao_leitor", "sha256", "mtime", "pior_rank", "notas")
 
@@ -304,13 +310,45 @@ def sem_faixa_preta(img: np.ndarray) -> np.ndarray:
     return img
 
 
-def ler(png: Path, liberadas: dict | None = None) -> tuple[Path, object, object]:
+@contextlib.contextmanager
+def deduzindo(linhas: dict | None):
+    """Durante o build, acrescenta ao que o parser leu as linhas que o print cortou (tabela liberadas, deduzidas).
+
+    Entra antes do build_steps do Replayer, como o .fix.json (que so corrige linha que existe): pote, stacks e .txt
+    derivam dali. Cada linha vira issue " a mao para ", que fica nas notas da mao."""
+    if not linhas:
+        yield
+        return
+    original = wpt_hand.aplicar_correcoes
+
+    def aplicar(parsed, view, correcoes):
+        notas = original(parsed, view, correcoes)
+
+        def proximo(rua):
+            return max((x.indice for x in parsed.actions + parsed.results if x.street == rua), default=-1) + 1
+        for rua, pos, verbo in linhas.get("acoes", []):
+            parsed.actions.append(Action(rua, pos, verbo, indice=proximo(rua)))
+            notas.append(f"{rua}: {pos} {verbo} deduzido a mao para o pote total do print")
+        for rua, pos, saldo in linhas.get("resultados", []):
+            parsed.results.append(Result(pos, None, net=saldo, street=rua, indice=proximo(rua)))
+            notas.append(f"{rua}: saldo de {pos} deduzido a mao para {saldo:+.2f}")
+        return notas
+    wpt_hand.aplicar_correcoes = aplicar
+    try:
+        yield
+    finally:
+        wpt_hand.aplicar_correcoes = original
+
+
+def ler(png: Path, liberadas: dict | None = None, deduzidas: dict | None = None) -> tuple[Path, object, object]:
     """A parte cara, que roda nos processos filhos: (png, hand, linhas) ou (png, None, motivo).
-    liberadas: sha256 do PNG -> queixas do Replayer ja conferidas no print (ver linhas)."""
+    liberadas: sha256 do PNG -> queixas do Replayer ja conferidas no print (ver linhas); deduzidas: sha256 -> as
+    linhas cortadas (ver deduzindo)."""
     try:
         img = sem_faixa_preta(np.array(Image.open(png).convert("RGB")))
-        hand = build(png, img=img, usar_armario=False, gravar=False)
         sha = hashlib.sha256(png.read_bytes()).hexdigest()
+        with deduzindo((deduzidas or {}).get(sha)):
+            hand = build(png, img=img, usar_armario=False, gravar=False)
         livres = (liberadas or {}).get(sha, frozenset())
         mao, acoes, jogadores = linhas(hand, png.name, livres)
         _, humanas, outras = separar_issues(list(hand.issues))
@@ -357,6 +395,11 @@ def liberadas(con: sqlite3.Connection) -> dict[str, frozenset]:
     return {sha: frozenset(i for i in txt.split("\n") if i) for sha, txt in con.execute("SELECT sha256, issues FROM liberadas")}
 
 
+def deduzidas(con: sqlite3.Connection) -> dict[str, dict]:
+    """sha256 do PNG -> as linhas que o print cortou e o pote prova (tabela liberadas, coluna deduzidas)."""
+    return {sha: json.loads(d) for sha, d in con.execute("SELECT sha256, deduzidas FROM liberadas WHERE deduzidas IS NOT NULL")}
+
+
 def _filho() -> None:
     """Inicio de cada processo do Pool: o filho nao toca no indice de anonimos (identidades.json).
 
@@ -375,7 +418,7 @@ def com_anonimos(hand, jogadores: list) -> list:
 
 def processar(png: Path, con: sqlite3.Connection, raiz: Path = RAIZ) -> str:
     """Le um PNG, grava e move. Devolve 'ok', 'repetida' ou o motivo da recusa."""
-    return registrar(*ler(png, liberadas(con)), con, raiz)
+    return registrar(*ler(png, liberadas(con), deduzidas(con)), con, raiz)
 
 
 # 3 de 4 nucleos fisicos: medido nesta maquina, deixa um livre para o resto do PC
@@ -388,7 +431,7 @@ def processar_pasta(pasta: Path, con: sqlite3.Connection, raiz: Path = RAIZ,
     contagem: dict[str, int] = {}
     pool = Pool(min(processos, len(pngs)), _filho) if processos > 1 and len(pngs) > 1 else None
     try:
-        leitor = functools.partial(ler, liberadas=liberadas(con))
+        leitor = functools.partial(ler, liberadas=liberadas(con), deduzidas=deduzidas(con))
         lidas = pool.imap(leitor, pngs) if pool else map(leitor, pngs)
         for i, (png, hand, resultado) in enumerate(lidas, 1):
             r = registrar(png, hand, resultado, con, raiz)
@@ -420,7 +463,7 @@ def refazer(con: sqlite3.Connection, raiz: Path = RAIZ, processos: int = PROCESS
     lidas_n = {"maos": 0, "recusadas": 0, "repetidas": 0, "nome_nas_duas_pastas": 0}
     pool = Pool(min(processos, len(pngs)), _filho) if processos > 1 and len(pngs) > 1 else None
     try:
-        leitor = functools.partial(ler, liberadas=liberadas(con))
+        leitor = functools.partial(ler, liberadas=liberadas(con), deduzidas=deduzidas(con))
         for i, (png, hand, resultado) in enumerate(pool.imap(leitor, pngs) if pool else map(leitor, pngs), 1):
             with novo:
                 if hand is None:

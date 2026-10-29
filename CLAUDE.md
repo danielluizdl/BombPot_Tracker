@@ -14,6 +14,9 @@ tracker.py     PNG -> hands/acoes/jogadores (SQLite) + .txt; processar / vigiar 
                refazer NUNCA mexe no banco: rele processadas/+recusadas/ para bombpot_novo.db (+hh_novo/) e escreve
                refazer_<versao>.txt com o diff; aceitar audita, copia o banco (bombpot_antes_aceitar.db), troca as 4
                tabelas da leitura numa transacao, move os prints que mudaram de pasta e grava REPLAYER_OK.
+               liberadas.deduzidas (`deduzindo`): linha que o print cortou e o pote total prova (desistencia de quem
+               ficou fora, saldo de quem so pos o ante; vencedor = pote - o que pos - rake 1 BB), posta no parser
+               antes do build_steps do Replayer; vira nota " a mao para " e sobrevive ao refazer.
 diario.bat     agendado (tarefa "BombPot conferencia diaria", 23:30): `tracker.py diario` esvazia Downloads\Hands BombPot (move o novo;
                apaga o que ja esta guardado identico, por sha256), processa e checa -> diario/<data_hora>.json; depois `claude -p` segue
                CONFERIR_DIA.md (.txt x print com `tracker.py recortes`, divergencia -> fila_txt.json) -> diario/<data_hora>.md

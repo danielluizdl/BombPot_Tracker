@@ -175,6 +175,19 @@ def test_correcao_a_mao_do_replayer_entra():
     assert tracker.separar_issues([corrigida, "mao com seguro: y", "outra"]) == (["mao com seguro: y"], [corrigida], ["outra"])
 
 
+def test_deduzidas_entram_no_fim_da_rua_e_marcadas():
+    from wptparse.parse import Action, Result
+    parsed = SimpleNamespace(actions=[Action("turn", "CO", "Aposta", 3.2, indice=0)],
+                             results=[Result("CO", None, net=5.5, street="turn", indice=1)])
+    original = tracker.wpt_hand.aplicar_correcoes
+    with tracker.deduzindo({"acoes": [["turn", "MP", "Desistir"]], "resultados": [["turn", "MP", -0.8]]}):
+        notas = tracker.wpt_hand.aplicar_correcoes(parsed, None, {})
+    assert tracker.wpt_hand.aplicar_correcoes is original  # o build seguinte le o print sem a deducao
+    assert [(a.pos, a.verb, a.indice) for a in parsed.actions] == [("CO", "Aposta", 0), ("MP", "Desistir", 2)]
+    assert (parsed.results[-1].pos, parsed.results[-1].net, parsed.results[-1].indice) == ("MP", -0.8, 3)
+    assert all(tracker.humana(n) for n in notas) and len(notas) == 2  # vai para as notas, nao recusa
+
+
 def test_mao_guarda_leitor_hash_data_e_distancia_das_cartas(tmp_path):
     con = _uma_mao(tmp_path)
     versao, sha, mtime, rank = con.execute("SELECT versao_leitor, sha256, mtime, pior_rank FROM hands").fetchone()
